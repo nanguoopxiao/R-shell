@@ -33,7 +33,7 @@ use shell_protocol::{
     SerialConnection, SftpConfig, SftpSession, SshConfig, SshConnection, TelnetConfig,
     TelnetConnection, fetch_ssh_host_stats,
 };
-use shell_renderer::gtk::{GtkTerminalView, TerminalAppearance};
+use shell_renderer::gtk::{GtkTerminalView, TerminalAppearance, adjusted_font_description_size};
 use shell_storage::{
     AppLanguage, AppSettings, BuiltinToolsPathPriority, BuiltinToolsSettings,
     OpensshCompatibilitySettings, ProfileStore, ProfilesDocument, RendererBackend, delete_secret,
@@ -4530,6 +4530,36 @@ fn register_terminal_widget(state: &AppState, widget: &DrawingArea) {
     state.terminal_widgets.borrow_mut().push(weak);
 }
 
+fn install_terminal_font_zoom_handler(state: &AppState, view: &GtkTerminalView) {
+    let state_for_zoom = state.clone();
+    view.set_font_zoom_handler(move |steps| {
+        zoom_terminal_font(&state_for_zoom, steps);
+    });
+}
+
+fn zoom_terminal_font(state: &AppState, steps: i32) {
+    let current_font = state.app_settings.borrow().terminal_font.clone();
+    let next_font = adjusted_font_description_size(&current_font, steps);
+    if next_font == current_font {
+        return;
+    }
+
+    let mut settings = state.app_settings.borrow().clone();
+    settings.terminal_font = next_font.clone();
+    match persist_app_settings(state, settings) {
+        Ok(()) => {
+            let language = state.app_settings.borrow().language.clone();
+            let size = next_font.split_whitespace().last().unwrap_or(&next_font);
+            state.status.set_text(&format!(
+                "{}: {} pt",
+                tr(&language, "终端字体大小", "Terminal font size"),
+                size
+            ));
+        }
+        Err(err) => state.status.set_text(&err.to_string()),
+    }
+}
+
 fn register_page_context(
     state: &AppState,
     widget: &impl gtk4::prelude::IsA<Widget>,
@@ -6733,6 +6763,7 @@ fn spawn_local_tab(
     let size = TerminalSize::new(120, 32);
     let buffer = TerminalBuffer::new(size, DEFAULT_SCROLLBACK_LINES);
     let view = GtkTerminalView::with_appearance(buffer, state.terminal_appearance.clone());
+    install_terminal_font_zoom_handler(state, &view);
     let widget = view.widget();
     register_terminal_widget(state, &widget);
 
@@ -6996,6 +7027,7 @@ fn spawn_ssh_tab(
     let size = TerminalSize::new(120, 32);
     let buffer = TerminalBuffer::new(size, DEFAULT_SCROLLBACK_LINES);
     let view = GtkTerminalView::with_appearance(buffer, state.terminal_appearance.clone());
+    install_terminal_font_zoom_handler(state, &view);
     let widget = view.widget();
     register_terminal_widget(state, &widget);
     let tab_title = format!("SSH {}", config.target());
@@ -7111,6 +7143,7 @@ fn spawn_telnet_tab(
     let size = TerminalSize::new(120, 32);
     let buffer = TerminalBuffer::new(size, DEFAULT_SCROLLBACK_LINES);
     let view = GtkTerminalView::with_appearance(buffer, state.terminal_appearance.clone());
+    install_terminal_font_zoom_handler(state, &view);
     let widget = view.widget();
     register_terminal_widget(state, &widget);
     let tab_title = format!("telnet {}", config.endpoint());
@@ -7160,6 +7193,7 @@ fn spawn_serial_tab(
     let size = TerminalSize::new(120, 32);
     let buffer = TerminalBuffer::new(size, DEFAULT_SCROLLBACK_LINES);
     let view = GtkTerminalView::with_appearance(buffer, state.terminal_appearance.clone());
+    install_terminal_font_zoom_handler(state, &view);
     let widget = view.widget();
     register_terminal_widget(state, &widget);
     let tab_title = format!("serial {}", config.port_name);
@@ -7200,6 +7234,7 @@ fn spawn_ftp_tab(state: &AppState, config: FtpConfig) -> anyhow::Result<Rc<FtpCo
     let size = TerminalSize::new(120, 32);
     let buffer = TerminalBuffer::new(size, DEFAULT_SCROLLBACK_LINES);
     let view = GtkTerminalView::with_appearance(buffer, state.terminal_appearance.clone());
+    install_terminal_font_zoom_handler(state, &view);
     let widget = view.widget();
     register_terminal_widget(state, &widget);
     let tab_title = format!("ftp {}", config.host);

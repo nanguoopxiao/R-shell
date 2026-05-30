@@ -140,7 +140,17 @@ Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Compressi
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
 ```
 
-仓库也包含自动发布工作流。推送 `v*` tag 后，GitHub Actions 会构建 Windows GTK 包、生成 zip 和 `.sha256` 校验文件，并创建 GitHub Release。
+仓库也包含自动发布工作流。推送 `v*` tag 后，GitHub Actions 会构建 Windows GTK 包、生成 zip 和 `.sha256` 校验文件，并创建 GitHub Release。Release 正文会自动包含从上一个 tag 到当前 tag 的提交摘要，并附加 GitHub 自动生成的发布说明。
+
+推荐发布流程：
+
+```powershell
+git status --short
+git tag v0.1.1
+git push origin main --tags
+```
+
+如果需要更像正式产品公告，可以在 Release 创建后到 GitHub 页面手动编辑正文，把自动生成的提交摘要整理成「新增」「修复」「已知问题」等段落。
 
 ## 架构
 

@@ -21,6 +21,7 @@ use shell_terminal::{AnsiParser, AttrsFlags, Cell, Color, TerminalBuffer, Termin
 
 type InputHandler = Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>;
 type ResizeHandler = Rc<RefCell<Option<Box<dyn Fn(TerminalSize)>>>>;
+type FontZoomHandler = Rc<RefCell<Option<Box<dyn Fn(i32)>>>>;
 type SelectionState = Rc<RefCell<Option<Selection>>>;
 type DragOrigin = Rc<RefCell<Option<(f64, f64)>>>;
 type CursorBlinkState = Rc<BlinkCell<bool>>;
@@ -34,6 +35,9 @@ const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const METRIC_HEIGHT_SAMPLE: &str = "Mgj|";
 const TERMINAL_BG: (f64, f64, f64) = (0.04, 0.045, 0.05);
 const TERMINAL_FG: (f64, f64, f64) = (0.86, 0.88, 0.90);
+const FONT_ZOOM_MIN_PT: f64 = 8.0;
+const FONT_ZOOM_MAX_PT: f64 = 32.0;
+const DEFAULT_FONT_SIZE_PT: f64 = 13.0;
 
 #[derive(Clone, Debug)]
 pub struct TerminalAppearance {
@@ -189,6 +193,7 @@ pub struct GtkTerminalView {
     parser: Rc<RefCell<AnsiParser>>,
     input_handler: InputHandler,
     resize_handler: ResizeHandler,
+    font_zoom_handler: FontZoomHandler,
     appearance: TerminalAppearance,
     /// 当前视图相对底部向上滚动了多少条回滚历史行。
     scroll_offset: Rc<RefCell<i64>>,
@@ -214,6 +219,7 @@ impl GtkTerminalView {
         let parser = Rc::new(RefCell::new(AnsiParser::new()));
         let input_handler: InputHandler = Rc::new(RefCell::new(None));
         let resize_handler: ResizeHandler = Rc::new(RefCell::new(None));
+        let font_zoom_handler: FontZoomHandler = Rc::new(RefCell::new(None));
         let scroll_offset: Rc<RefCell<i64>> = Rc::new(RefCell::new(0));
         let selection: SelectionState = Rc::new(RefCell::new(None));
         let render_cache: RenderCacheRef = Rc::new(RefCell::new(None));
@@ -243,7 +249,12 @@ impl GtkTerminalView {
             appearance.clone(),
             Rc::clone(&cursor_blink_state),
         );
-        connect_scroll(&area, Rc::clone(&scroll_offset), Rc::clone(&buffer));
+        connect_scroll(
+            &area,
+            Rc::clone(&scroll_offset),
+            Rc::clone(&buffer),
+            Rc::clone(&font_zoom_handler),
+        );
         connect_pointer(
             &area,
             Rc::clone(&buffer),
@@ -260,6 +271,7 @@ impl GtkTerminalView {
             parser,
             input_handler,
             resize_handler,
+            font_zoom_handler,
             appearance,
             scroll_offset,
             render_cache,
@@ -280,9 +292,14 @@ impl GtkTerminalView {
         *self.resize_handler.borrow_mut() = Some(Box::new(handler));
     }
 
+    pub fn set_font_zoom_handler(&self, handler: impl Fn(i32) + 'static) {
+        *self.font_zoom_handler.borrow_mut() = Some(Box::new(handler));
+    }
+
     pub fn clear_io_handlers(&self) {
         *self.input_handler.borrow_mut() = None;
         *self.resize_handler.borrow_mut() = None;
+        *self.font_zoom_handler.borrow_mut() = None;
     }
 
     pub fn set_font_description(&self, font_description: impl Into<String>) {
@@ -533,6 +550,64 @@ fn normalize_font_description(raw: &str) -> String {
         .unwrap_or("Cascadia Mono");
 
     format!("{family} {size}")
+}
+
+#[must_use]
+pub fn adjusted_font_description_size(raw: &str, steps: i32) -> String {
+    let trimmed = raw.trim();
+    let source = if trimmed.is_empty() {
+        "Cascadia Mono"
+    } else {
+        trimmed
+    };
+
+    let Some((prefix, size)) = split_font_description_size(source) else {
+        let size =
+            (DEFAULT_FONT_SIZE_PT + f64::from(steps)).clamp(FONT_ZOOM_MIN_PT, FONT_ZOOM_MAX_PT);
+        return format!("{} {}", source.trim_end(), format_font_size(size));
+    };
+
+    let adjusted = (size + f64::from(steps)).clamp(FONT_ZOOM_MIN_PT, FONT_ZOOM_MAX_PT);
+    format!("{} {}", prefix.trim_end(), format_font_size(adjusted))
+}
+
+fn split_font_description_size(raw: &str) -> Option<(&str, f64)> {
+    let trimmed = raw.trim_end();
+    let end = trimmed.len();
+    let mut start = end;
+    let mut seen_digit = false;
+    let mut seen_dot = false;
+
+    for (index, ch) in trimmed.char_indices().rev() {
+        if ch.is_ascii_digit() {
+            start = index;
+            seen_digit = true;
+        } else if ch == '.' && seen_digit && !seen_dot {
+            start = index;
+            seen_dot = true;
+        } else {
+            break;
+        }
+    }
+
+    if !seen_digit || start == 0 {
+        return None;
+    }
+
+    let prefix = &trimmed[..start];
+    let size = trimmed[start..].parse::<f64>().ok()?;
+    if prefix.trim().is_empty() {
+        return None;
+    }
+    Some((prefix, size))
+}
+
+fn format_font_size(size: f64) -> String {
+    if (size.fract()).abs() < f64::EPSILON {
+        format!("{}", size as i32)
+    } else {
+        format!("{size:.1}")
+    }
 }
 
 fn fallback_font_description(ch: char, base_font: &FontDescription) -> Option<FontDescription> {
@@ -2504,10 +2579,30 @@ fn connect_scroll(
     area: &DrawingArea,
     scroll_offset: Rc<RefCell<i64>>,
     buffer: Rc<RefCell<TerminalBuffer>>,
+    font_zoom_handler: FontZoomHandler,
 ) {
     let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
     let area_for_redraw = area.clone();
-    controller.connect_scroll(move |_, _dx, dy| {
+    controller.connect_scroll(move |controller, _dx, dy| {
+        if controller
+            .current_event_state()
+            .contains(gdk::ModifierType::CONTROL_MASK)
+        {
+            let steps = if dy < 0.0 {
+                1
+            } else if dy > 0.0 {
+                -1
+            } else {
+                0
+            };
+            if steps != 0
+                && let Some(handler) = font_zoom_handler.borrow().as_ref()
+            {
+                handler(steps);
+            }
+            return glib::Propagation::Stop;
+        }
+
         let scrollback_len = buffer.borrow().scrollback_len() as i64;
         let mut offset = scroll_offset.borrow_mut();
         // dy < 0 表示滚轮向上，进入历史回滚区域。
@@ -2794,6 +2889,37 @@ mod tests {
         assert_eq!(
             normalize_font_description("JetBrains Mono 15"),
             "JetBrains Mono 15"
+        );
+    }
+
+    #[test]
+    fn adjusted_font_description_size_preserves_family_list() {
+        assert_eq!(
+            adjusted_font_description_size(
+                "Cascadia Mono, Microsoft YaHei UI, SimSun-ExtB, Segoe UI Emoji 13",
+                1,
+            ),
+            "Cascadia Mono, Microsoft YaHei UI, SimSun-ExtB, Segoe UI Emoji 14"
+        );
+    }
+
+    #[test]
+    fn adjusted_font_description_size_clamps_to_readable_range() {
+        assert_eq!(
+            adjusted_font_description_size("Consolas 8", -1),
+            "Consolas 8"
+        );
+        assert_eq!(
+            adjusted_font_description_size("Consolas 32", 1),
+            "Consolas 32"
+        );
+    }
+
+    #[test]
+    fn adjusted_font_description_size_adds_missing_size() {
+        assert_eq!(
+            adjusted_font_description_size("JetBrains Mono", 1),
+            "JetBrains Mono 14"
         );
     }
 
