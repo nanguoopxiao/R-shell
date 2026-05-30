@@ -140,7 +140,7 @@ Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Compressi
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
 ```
 
-The repository also includes an automated release workflow. Push a `v*` tag and GitHub Actions will build the Windows GTK package, create a zip plus a `.sha256` checksum, and publish a GitHub Release. The release body automatically includes a commit summary from the previous tag to the current tag, followed by GitHub's generated release notes.
+The repository also includes an automated release workflow. Push a `v*` tag and GitHub Actions will build the Windows GTK package, create a zip plus a `.sha256` checksum, and publish a GitHub Release. The release body automatically includes a commit summary from the previous tag to the current tag, followed by GitHub's generated release notes. See [docs/release-process.md](docs/release-process.md) for the full workflow.
 
 Recommended release flow:
 

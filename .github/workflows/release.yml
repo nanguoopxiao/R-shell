@@ -82,8 +82,11 @@ jobs:
             $previousTag = ""
           }
 
-          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
-          $commits = @(git log --pretty=format:"- %s (%h)" $range)
+          if ($previousTag) {
+            $commits = @(git log --pretty=format:"- %s (%h)" "$previousTag..HEAD")
+          } else {
+            $commits = @(git log --pretty=format:"- %s (%h)" -n 20 HEAD)
+          }
           if ($LASTEXITCODE -ne 0) {
             throw 'Failed to collect release commits.'
           }
@@ -95,7 +98,7 @@ jobs:
           if ($previousTag) {
             $notes += "从 $previousTag 到 $version 的提交摘要："
           } else {
-            $notes += "此版本包含当前 tag 中的提交摘要："
+            $notes += "未找到上一个 tag，以下是最近 20 条提交摘要："
           }
           $notes += ""
           if ($commits.Count -gt 0) {
