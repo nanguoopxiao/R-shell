@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $MsysRoot = if ($env:MSYS2_ROOT) {
     $env:MSYS2_ROOT
+} elseif ($env:MSYS2_LOCATION) {
+    $env:MSYS2_LOCATION
 } else {
     Join-Path $Root '.msys64'
 }
@@ -20,6 +22,8 @@ $CargoBin = Join-Path $HOME '.cargo\bin'
 if (-not (Test-Path $MingwBin)) {
     throw "MSYS2 GTK4 dependencies were not found at $MingwBin. See README.md for setup steps."
 }
+
+Write-Host "Using MSYS2 root: $MsysRoot"
 
 if (-not (Test-Path (Join-Path $CargoBin 'cargo.exe'))) {
     $CargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
