@@ -1,5 +1,6 @@
 param(
     [string]$Destination = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'dist\windows-gtk'),
+    [switch]$IncludeSymbols,
     [switch]$SmokeTest
 )
 
@@ -80,7 +81,7 @@ New-Item -ItemType Directory -Path $ToolsRoot | Out-Null
 Copy-Item (Join-Path $Root 'target\release\shell-app.exe') $BinDir
 
 $PdbPath = Join-Path $Root 'target\release\shell_app.pdb'
-if (Test-Path $PdbPath) {
+if ($IncludeSymbols -and (Test-Path $PdbPath)) {
     Copy-Item $PdbPath $BinDir
 }
 
@@ -127,26 +128,175 @@ function Copy-ToolchainPath {
     Copy-Item $source $target -Recurse
 }
 
-$toolchainPaths = @(
+$toolchainConfigPaths = @(
     'etc\msystem',
     'etc\msystem.d',
     'etc\pki',
     'etc\profile',
     'etc\profile.d',
-    'mingw64\bin',
+    'etc\protocols',
+    'etc\services',
+    'etc\ssh',
+    'etc\wgetrc',
     'mingw64\etc',
     'mingw64\ssl',
     'mingw64\share\licenses',
-    'usr\bin',
     'usr\etc',
-    'usr\lib',
     'usr\ssl',
     'usr\share\licenses',
     'usr\share\terminfo'
 )
 
-foreach ($relativePath in $toolchainPaths) {
+foreach ($relativePath in $toolchainConfigPaths) {
     Copy-ToolchainPath $relativePath
+}
+
+$MsysRootFull = (Resolve-Path $MsysRoot).Path.TrimEnd('\')
+$toolchainBinaryDirs = @($UsrBin, $MingwBin)
+$ObjdumpPath = Join-Path $MingwBin 'objdump.exe'
+if (-not (Test-Path $ObjdumpPath)) {
+    $ObjdumpCommand = Get-Command objdump -ErrorAction SilentlyContinue
+    if ($null -eq $ObjdumpCommand) {
+        throw 'objdump.exe was not found. It is required to build a slim command toolchain package.'
+    }
+    $ObjdumpPath = $ObjdumpCommand.Source
+}
+
+function Get-ToolchainRelativePath {
+    param(
+        [string]$Path
+    )
+
+    $fullPath = (Resolve-Path $Path).Path
+    if (-not $fullPath.StartsWith($MsysRootFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Toolchain file is outside MSYS2 root: $fullPath"
+    }
+    $relativePath = $fullPath.Substring($MsysRootFull.Length)
+    if ($relativePath.StartsWith('\')) {
+        $relativePath = $relativePath.Substring(1)
+    }
+    $relativePath
+}
+
+function Copy-ToolchainFile {
+    param(
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path $SourcePath -PathType Leaf)) {
+        return $false
+    }
+
+    $relativePath = Get-ToolchainRelativePath $SourcePath
+    $target = Join-Path $ToolsRoot $relativePath
+    $parent = Split-Path $target -Parent
+    if (-not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent | Out-Null
+    }
+    Copy-Item $SourcePath $target -Force
+    $true
+}
+
+function Resolve-ToolchainBinary {
+    param(
+        [string]$CommandName
+    )
+
+    $fileName = if ([System.IO.Path]::GetExtension($CommandName)) {
+        $CommandName
+    } else {
+        "$CommandName.exe"
+    }
+
+    foreach ($dir in $toolchainBinaryDirs) {
+        $candidate = Join-Path $dir $fileName
+        if (Test-Path $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+    $null
+}
+
+function Get-PeDllNames {
+    param(
+        [string]$FilePath
+    )
+
+    & $ObjdumpPath -p $FilePath 2>$null |
+        ForEach-Object {
+            if ($_ -match 'DLL Name:\s*(.+)$') {
+                $matches[1].Trim()
+            }
+        }
+}
+
+$copiedToolFiles = @{}
+$queuedToolFiles = New-Object 'System.Collections.Generic.Queue[string]'
+
+function Add-ToolchainFileWithDependencies {
+    param(
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path $SourcePath -PathType Leaf)) {
+        return $false
+    }
+
+    $fullPath = (Resolve-Path $SourcePath).Path
+    $key = $fullPath.ToLowerInvariant()
+    if ($copiedToolFiles.ContainsKey($key)) {
+        return $true
+    }
+
+    if (Copy-ToolchainFile $fullPath) {
+        $copiedToolFiles[$key] = $true
+        $queuedToolFiles.Enqueue($fullPath)
+        return $true
+    }
+    $false
+}
+
+$requiredToolCommands = @('bash', 'sh', 'curl', 'wget', 'ssh', 'telnet')
+$optionalToolCommands = @(
+    'scp', 'sftp', 'ssh-add', 'ssh-agent', 'ssh-keygen', 'ssh-keyscan',
+    'cat', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'ls', 'pwd', 'env', 'echo',
+    'test', 'true', 'false', 'uname', 'date', 'touch', 'head', 'tail',
+    'sort', 'uniq', 'wc', 'find', 'xargs', 'grep', 'sed', 'awk', 'gawk',
+    'less', 'tar', 'bsdtar', 'gzip', 'gunzip', 'xz', 'unxz', 'zip', 'unzip'
+)
+$missingToolCommands = @()
+
+foreach ($commandName in $requiredToolCommands) {
+    $commandPath = Resolve-ToolchainBinary $commandName
+    if ($null -eq $commandPath) {
+        $missingToolCommands += $commandName
+        continue
+    }
+    Add-ToolchainFileWithDependencies $commandPath | Out-Null
+}
+
+if ($missingToolCommands.Count -gt 0) {
+    throw "Packaged toolchain is missing required commands: $($missingToolCommands -join ', ')"
+}
+
+foreach ($commandName in $optionalToolCommands) {
+    $commandPath = Resolve-ToolchainBinary $commandName
+    if ($null -ne $commandPath) {
+        Add-ToolchainFileWithDependencies $commandPath | Out-Null
+    }
+}
+
+while ($queuedToolFiles.Count -gt 0) {
+    $currentFile = $queuedToolFiles.Dequeue()
+    foreach ($dllName in Get-PeDllNames $currentFile) {
+        foreach ($dir in $toolchainBinaryDirs) {
+            $candidate = Join-Path $dir $dllName
+            if (Test-Path $candidate -PathType Leaf) {
+                Add-ToolchainFileWithDependencies $candidate | Out-Null
+                break
+            }
+        }
+    }
 }
 
 foreach ($runtimeDir in @('home', 'tmp', 'var\tmp')) {
@@ -173,10 +323,9 @@ function Test-ToolchainCommand {
     return $false
 }
 
-$requiredToolCommands = @('bash', 'sh', 'curl', 'wget', 'ssh', 'telnet')
-$missingToolCommands = @($requiredToolCommands | Where-Object { -not (Test-ToolchainCommand $_) })
-if ($missingToolCommands.Count -gt 0) {
-    throw "Packaged toolchain is missing required commands: $($missingToolCommands -join ', ')"
+$missingPackagedToolCommands = @($requiredToolCommands | Where-Object { -not (Test-ToolchainCommand $_) })
+if ($missingPackagedToolCommands.Count -gt 0) {
+    throw "Packaged toolchain is missing required commands: $($missingPackagedToolCommands -join ', ')"
 }
 
 $ExePath = Join-Path $BinDir 'shell-app.exe'

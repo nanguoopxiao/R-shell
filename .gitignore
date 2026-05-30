@@ -2,6 +2,8 @@
 /target/
 *.pdb
 *.profraw
+*.zip
+*.sha256
 
 # Packaged app outputs and test artifacts
 /dist/
