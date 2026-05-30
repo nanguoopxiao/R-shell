@@ -1,23 +1,25 @@
 # Shell
 
-Shell is a GTK4/gtk-rs based cross-platform terminal client MVP written in Rust.
-The project is structured around a lightweight terminal core, protocol adapters, and a GTK4 UI that is enabled explicitly with the `gtk-ui` feature.
+<kbd>中文</kbd> <a href="README.en.md"><kbd>English</kbd></a>
 
-## Current MVP Scope
+Shell 是一个使用 Rust 编写的 GTK4/gtk-rs 跨平台终端客户端 MVP。
+项目围绕轻量级终端核心、协议适配层和 GTK4 UI 组织；GTK4 界面通过 `gtk-ui` feature 显式启用，核心 crate 可以在没有 GTK4 系统库的环境中构建和测试。
 
-- Rust Cargo workspace with separate core, terminal, platform, protocol, storage, renderer, and app crates.
-- CPU-first terminal buffer and renderer architecture.
-- Local shell/PTY support using `portable-pty`.
-- SSH sessions through the system `ssh` client running inside a PTY, so host-key prompts, passwords, and private-key passphrases stay inside the terminal session instead of being stored by the app.
-- Windows packages can include a bundled MSYS2-based command environment for common tools such as `curl`, `wget`, `ssh`, and `telnet`.
-- Native Telnet byte-stream sessions with basic IAC negotiation and NAWS resize reporting.
-- Serial terminal sessions using the `serialport` crate with a simple 8N1-oriented MVP flow.
-- GTK4 terminal view resize propagation to LocalShell, SSH, and Telnet sessions.
-- GTK4 application behind the `gtk-ui` feature so core crates can be built and tested on machines without GTK4 development libraries.
+## 当前 MVP 范围
 
-## Build
+- Rust Cargo workspace，拆分为 core、terminal、platform、protocol、storage、renderer 和 app 等 crate。
+- CPU 优先的终端缓冲区和渲染架构。
+- 基于 `portable-pty` 的本地 shell/PTY 支持。
+- SSH 终端会话通过 PTY 内的 OpenSSH 客户端运行，主机密钥提示、密码和私钥口令仍保留在终端交互流里，应用不直接保存明文。
+- Windows 发布包可以包含基于 MSYS2 的内置常用命令环境，例如 `curl`、`wget`、`ssh` 和 `telnet`。
+- 原生 Telnet 字节流会话，包含基础 IAC 协商和 NAWS 窗口尺寸上报。
+- 使用 `serialport` crate 的串口终端会话，当前以简单 8N1 场景为 MVP。
+- GTK4 终端视图会把尺寸变化传播到 LocalShell、SSH 和 Telnet 会话。
+- GTK4 应用位于 `gtk-ui` feature 后面，核心 crate 可在没有 GTK4 开发库的机器上构建和测试。
 
-Core workspace build without GTK4 system dependencies:
+## 构建
+
+不依赖 GTK4 系统库的核心 workspace 构建：
 
 ```powershell
 cargo fmt --check
@@ -26,43 +28,43 @@ cargo test --workspace
 cargo build --workspace
 ```
 
-GTK4 UI build after installing GTK4 development dependencies:
+安装 GTK4 开发依赖后运行 GTK4 UI：
 
 ```powershell
 cargo run -p shell-app --features gtk-ui
 ```
 
-Release GUI build:
+构建 release GUI：
 
 ```powershell
 cargo build -p shell-app --release --features gtk-ui
 ```
 
-`target\release\shell-app.exe` is Cargo's raw build output. It is useful for local development, but on Windows it is not a self-contained GTK app by itself.
+`target\release\shell-app.exe` 是 Cargo 的原始构建产物，适合本地开发使用；但在 Windows 上，它本身不是一个可双击分发的完整 GTK 应用包。
 
-On Windows, `target\release\shell-app.exe` is not a self-contained GTK bundle by itself. To build a double-clickable package with the required GTK runtime files, use:
+在 Windows 上构建包含 GTK 运行时文件的可分发包：
 
 ```powershell
 .\scripts\package-gtk.ps1
 ```
 
-To package and immediately verify that the bundled app starts correctly:
+构建并立即验证打包后的应用能启动：
 
 ```powershell
 .\scripts\package-gtk.ps1 -SmokeTest
 ```
 
-Then launch:
+然后启动：
 
 ```text
 dist\windows-gtk\bin\shell-app.exe
 ```
 
-In this workspace, `target` is the compiler output/cache directory and `dist` is the distributable package directory. Keep using `target` for builds and `dist` for the portable bundle you hand to users.
+本项目中，`target` 是编译输出和缓存目录，`dist` 是交付给用户的可分发目录。构建继续使用 `target`，发布包继续输出到 `dist`。
 
-If you need a true single-file `.exe`, the current GTK4 + MSYS2 runtime does not support that packaging model here. GTK requires DLLs plus runtime data under `share` and `lib`, so the supported output is the `dist\windows-gtk` folder, not one standalone executable.
+如果需要真正的单文件 `.exe`，当前 GTK4 + MSYS2 运行时不适合这种打包模型。GTK 需要 DLL，以及 `share` 和 `lib` 下的运行时数据；因此目前支持的交付形态是 `dist\windows-gtk` 文件夹，而不是单个独立可执行文件。
 
-With the local MSYS2 setup used by this workspace:
+使用本仓库约定的本地 MSYS2 环境时，可以通过辅助脚本构建：
 
 ```powershell
 .\scripts\dev-gtk.ps1 check
@@ -71,88 +73,71 @@ With the local MSYS2 setup used by this workspace:
 .\scripts\dev-gtk.ps1 run
 ```
 
-## Connection MVP
+## 连接能力
 
-The GTK app opens a local shell tab on startup. The connection bar supports:
+GTK 应用启动时会打开一个本地 shell 页签。连接栏当前支持：
 
-- `Local`: opens another local PTY shell.
-- `SSH`: uses `host`, optional `user`, and optional `port`; defaults to port 22.
-- `Telnet`: uses `host` and optional `port`; defaults to port 23.
-- `Serial`: uses the serial port field and baud-rate field; defaults to 115200 baud.
+- `Local`：打开另一个本地 PTY shell。
+- `SSH`：使用 `host`、可选 `user` 和可选 `port`，默认端口为 22。
+- `Telnet`：使用 `host` 和可选 `port`，默认端口为 23。
+- `Serial`：使用串口字段和波特率字段，默认波特率为 115200。
 
-Saved FTP/SFTP/SSH passwords can be stored securely on Windows and are mirrored into an encrypted local vault so they survive keychain hiccups. Export and import include those saved passwords in encrypted form for the same Windows account. SSH terminal authentication is still delegated to an OpenSSH client running inside the PTY; when a saved password is available, the app replays it to the password prompt.
+保存的 FTP/SFTP/SSH 密码可以在 Windows 上安全存储，并镜像到本地加密 vault 中，以便在系统凭据环偶发不可用时仍能恢复。导入导出会以同一 Windows 账号可解密的形式包含这些已保存密码。SSH 终端认证仍委托给 PTY 内运行的 OpenSSH 客户端；当存在已保存密码时，应用会把它回放到密码提示中。
 
-## Built-In Command Environment
+## 内置命令环境
 
-On Windows, the GTK package script copies a portable MSYS2-derived toolchain into:
+在 Windows 上，GTK 打包脚本会把一个便携的 MSYS2 派生命令工具链复制到：
 
 ```text
 dist\windows-gtk\tools\msys64
 ```
 
-When that folder contains the required commands, the app adds a `Shell Tools (Bash)` local terminal entry and can use the bundled `ssh.exe` for SSH terminal sessions. The settings page controls whether the built-in command environment is enabled, whether it is injected into existing local shells, whether SSH sessions prefer the bundled OpenSSH client, and whether bundled commands should take priority over the system `PATH`.
+当该目录包含所需命令时，应用会新增 `Shell Tools (Bash)` 本地终端入口，并可以在 SSH 终端会话中使用 bundled `ssh.exe`。设置页可以控制是否启用内置命令环境、是否注入到现有本地 shell、SSH 会话是否优先使用内置 OpenSSH 客户端，以及内置命令是否优先于系统 `PATH`。
 
-The first required command set is `bash`, `sh`, `curl`, `wget`, `ssh`, and `telnet`. Additional GNU/MSYS2 utilities are made available through the same `PATH` overlay when present in the package. PowerShell keeps its normal alias behavior unless a tool-enabled PowerShell profile is added later, so `Shell Tools (Bash)` is the most predictable first entry for GNU-style commands.
+第一批要求的命令包括 `bash`、`sh`、`curl`、`wget`、`ssh` 和 `telnet`。发布包中存在的其他 GNU/MSYS2 工具会通过同一套 `PATH` overlay 暴露出来。PowerShell 默认保留自己的别名行为；在专门的 PowerShell 工具 profile 加入之前，`Shell Tools (Bash)` 是 GNU 风格命令最可预期的入口。
 
-The bundled toolchain is a user-space command environment. It does not install drivers, change global environment variables, or store credentials. Release builds that ship MSYS2 binaries must include the corresponding license files and should refresh the bundled packages regularly for security updates.
+内置工具链是用户态命令环境。它不会安装驱动，不会修改全局环境变量，也不会存储凭据。发布包含 MSYS2 二进制文件时，需要随包包含对应 license 文件，并定期刷新工具链包以获得安全更新。
 
-## Windows GTK4 Setup
+## Windows GTK4 环境
 
-GTK4 development libraries are required only for the `gtk-ui` feature. A typical Windows setup uses MSYS2:
+只有启用 `gtk-ui` feature 时才需要 GTK4 开发库。Windows 上通常使用 MSYS2：
 
 ```powershell
 winget install MSYS2.MSYS2
 ```
 
-Then from an MSYS2 MinGW64 shell:
+然后在 MSYS2 MinGW64 shell 中安装依赖：
 
 ```bash
 pacman -S --needed mingw-w64-x86_64-gtk4 mingw-w64-x86_64-pkg-config mingw-w64-x86_64-gcc
 ```
 
-Add `C:\msys64\mingw64\bin` to `PATH` before building the GTK4 feature, or install MSYS2 locally under `.msys64` and use the helper script:
+构建 GTK4 feature 前，把 `C:\msys64\mingw64\bin` 加入 `PATH`；也可以把 MSYS2 安装到仓库本地 `.msys64` 下，并使用辅助脚本：
 
 ```powershell
 .\scripts\dev-gtk.ps1 check
 .\scripts\dev-gtk.ps1 run
 ```
 
-## Architecture
+## 架构
 
-- `shell-core`: shared models, events, errors, protocol/session types.
-- `shell-terminal`: terminal cells, screen buffer, ANSI starter parser, scrollback.
-- `shell-platform`: default shell detection and PTY abstraction.
-- `shell-protocol`: protocol adapter layer for LocalShell, SSH, Telnet, and Serial.
-- `shell-renderer`: UI-independent render snapshots and optional GTK4 terminal view.
-- `shell-storage`: connection profile persistence.
-- `shell-app`: application entry point and GTK4 UI.
+- `shell-core`：共享模型、事件、错误和协议/会话类型。
+- `shell-terminal`：终端单元格、屏幕缓冲区、ANSI 起步解析器和 scrollback。
+- `shell-platform`：默认 shell 检测和 PTY 抽象。
+- `shell-protocol`：LocalShell、SSH、Telnet 和 Serial 等协议适配层。
+- `shell-renderer`：与 UI 无关的渲染快照，以及可选 GTK4 终端视图。
+- `shell-storage`：连接配置持久化。
+- `shell-app`：应用入口和 GTK4 UI。
 
-## Memory Budget
+## 内存预算
 
-- Memory use is treated as a product requirement, not a later tuning pass.
-- Hot render paths should avoid full-buffer clones and prefer visible-slice access.
-- Scrollback should stay bounded by default; new tabs are expected to keep a modest history budget unless a user-configurable setting is added deliberately.
-- On Windows, the current GTK4 runtime pulls in GStreamer-related modules even for this app's idle UI. App-level changes should still minimize shell/terminal memory growth, but further idle-memory reduction will require a leaner GTK runtime choice in addition to Rust-side optimizations.
+- 内存使用是产品要求，不是后期优化项。
+- 热渲染路径应避免整缓冲区 clone，优先使用可见区域切片。
+- scrollback 默认保持有界；除非明确加入用户可配置项，新页签应维持适中的历史行预算。
+- 在 Windows 上，当前 GTK4 运行时即使在应用空闲 UI 下也会加载 GStreamer 相关模块。应用层仍应尽量减少 shell/terminal 内存增长，但进一步降低空闲内存还需要更精简的 GTK 运行时选择，而不只是 Rust 侧优化。
 
-## Next Protocol Work
+## 后续协议工作
 
-- Replace or complement system-SSH mode with a native SSH backend once credential storage and host-key trust flows are designed.
-- Add SFTP/FTP file transfer panels after the terminal session model stabilizes.
-- Add VNC as an independent framebuffer viewer, not as part of the terminal renderer.
-
-
-
-
-
-
-我已经定位了真正的问题，同一开发文件夹在其他电脑 30MB、本机飙到 100-200MB，根因不是应用逻辑泄漏，也不是字体本身，而是本机 GTK/MSYS2 运行时初始化时拉起了 D3D12/Vulkan/GStreamer/Intel DXVA 这条 GPU/媒体驱动链。本机使用了intel arc显卡，而其他机器并没有。修复后程序启动时默认禁用这些 GTK 后端，并在窗口呈现后做 Windows 工作集修剪。
-你为什么始终没找到呢？
-我当前的修复方案有没有存在一些问题？
-以及，第一个问题，如图19，新建会话里仍然有重叠的方框样式，你的修复不完整。图21的设置界面，也还是存在重叠方框。
-图20是鼠标移动到会话或者sftp的图标时，左侧的栏会发生几个像素点的位移，非常诡异。
-第三个问题，在我点击打开设置或者新建会话的框后，我alt+tab切换界面到其他程序了，再换回我们的程序，然后点x关掉刚刚弹出的框，但整个程序界面就会立刻最小化，又切换我刚刚切换的程序作为最前显示的，这也有bug
-第四个问题，我希望终端里的复制是 鼠标选中文字后，ctrl+c 粘贴是ctrl+v，在没有选中文字的情况下，ctrl+c是结束那一行进程，这个逻辑能做吗？
-第五个问题，当前有太多打包发布的文件夹，dist、target都是，请只保留一个，清理掉没用的编译发布文件夹。
-第六个问题，现在内存一开始会很低，然后会缓慢增长，是不是回收机制没写？
-
-请帮我修好这些问题，一直测试，运行真实测试，调用UI Automation，持续测试debug，一直改到没问题为止。
+- 在凭据存储和 host-key 信任流程设计稳定后，用原生 SSH backend 替换或补充系统 OpenSSH 模式。
+- 在终端会话模型稳定后加入 SFTP/FTP 文件传输面板。
+- 将 VNC 作为独立 framebuffer viewer 添加，而不是终端渲染器的一部分。
