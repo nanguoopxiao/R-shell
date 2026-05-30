@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(not(feature = "gtk-ui"))]
 fn main() {
     println!(
-        "shell-app built without GTK4. Run `cargo run -p shell-app --features gtk-ui` after installing GTK4 development libraries."
+        "R-shell built without GTK4. Run `cargo run -p shell-app --features gtk-ui` after installing GTK4 development libraries."
     );
 }
 
@@ -58,8 +58,16 @@ fn configure_windows_gtk_runtime() {
     let Some(bin_dir) = exe_path.parent() else {
         return;
     };
-    let Some(prefix_dir) = bin_dir.parent() else {
-        return;
+    let prefix_dir = if bin_dir.join("share").exists() {
+        bin_dir
+    } else if bin_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+    {
+        bin_dir.parent().unwrap_or(bin_dir)
+    } else {
+        bin_dir
     };
 
     let share_dir = prefix_dir.join("share");
@@ -67,7 +75,7 @@ fn configure_windows_gtk_runtime() {
         return;
     }
 
-    // 从 `dist/windows-gtk/bin` 启动时，将 GLib/GDK/Pango 指向随包携带的
+    // 从便携发布目录启动时，将 GLib/GDK/Pango 指向随包携带的
     // 运行时目录。这样可以保持包的可移植性，并避免误加载用户全局 PATH 中
     // 不兼容的 DLL。
     prepend_env_path("PATH", bin_dir);

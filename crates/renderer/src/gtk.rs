@@ -2727,12 +2727,12 @@ mod tests {
 
     #[test]
     fn semantic_highlights_more_path_forms() {
-        let text = "cp ./target/release/shell-app.exe C:/Temp/shell-app.exe HOME=~/shell";
+        let text = "cp ./target/release/R-shell.exe C:/Temp/R-shell.exe HOME=~/shell";
         let highlights = highlights_for_text(text);
 
         assert_substring_highlighted(text, &highlights, "cp", command_highlight());
         assert_substring_highlighted(text, &highlights, "./target/release", path_highlight());
-        assert_substring_highlighted(text, &highlights, "C:/Temp/shell-app.exe", path_highlight());
+        assert_substring_highlighted(text, &highlights, "C:/Temp/R-shell.exe", path_highlight());
         assert_substring_highlighted(text, &highlights, "HOME", env_key_highlight());
         assert_substring_highlighted(text, &highlights, "~/shell", path_highlight());
     }

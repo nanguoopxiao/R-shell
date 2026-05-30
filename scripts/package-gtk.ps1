@@ -38,6 +38,28 @@ $env:PATH = "$CargoBin;$MingwBin;$UsrBin;$env:PATH"
 $env:PKG_CONFIG_PATH = "$(Join-Path $MsysRoot 'mingw64\lib\pkgconfig');$(Join-Path $MsysRoot 'mingw64\share\pkgconfig')"
 $env:XDG_DATA_DIRS = "$(Join-Path $MsysRoot 'mingw64\share');$(Join-Path $MsysRoot 'usr\share')"
 
+$ObjdumpPath = Join-Path $MingwBin 'objdump.exe'
+if (-not (Test-Path $ObjdumpPath)) {
+    $ObjdumpCommand = Get-Command objdump -ErrorAction SilentlyContinue
+    if ($null -eq $ObjdumpCommand) {
+        throw 'objdump.exe was not found. It is required to build a slim Windows package.'
+    }
+    $ObjdumpPath = $ObjdumpCommand.Source
+}
+
+function Get-PeDllNames {
+    param(
+        [string]$FilePath
+    )
+
+    & $ObjdumpPath -p $FilePath 2>$null |
+        ForEach-Object {
+            if ($_ -match 'DLL Name:\s*(.+)$') {
+                $matches[1].Trim()
+            }
+        }
+}
+
 Set-Location $Root
 
 cargo build -p shell-app --release --features gtk-ui
@@ -45,7 +67,8 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$BinDir = Join-Path $Destination 'bin'
+$AppExeName = 'R-shell.exe'
+$BinDir = $Destination
 $ShareDir = Join-Path $Destination 'share'
 $LibDir = Join-Path $Destination 'lib'
 $ToolsRoot = Join-Path $Destination 'tools\msys64'
@@ -78,19 +101,69 @@ New-Item -ItemType Directory -Path $ShareDir | Out-Null
 New-Item -ItemType Directory -Path $LibDir | Out-Null
 New-Item -ItemType Directory -Path $ToolsRoot | Out-Null
 
-Copy-Item (Join-Path $Root 'target\release\shell-app.exe') $BinDir
+$BuildExePath = Join-Path $Root "target\release\$AppExeName"
+if (-not (Test-Path $BuildExePath)) {
+    throw "Expected release executable was not found at $BuildExePath."
+}
+Copy-Item $BuildExePath $BinDir
 
-$PdbPath = Join-Path $Root 'target\release\shell_app.pdb'
-if ($IncludeSymbols -and (Test-Path $PdbPath)) {
-    Copy-Item $PdbPath $BinDir
+if ($IncludeSymbols) {
+    $PdbCandidates = @('R-shell.pdb', 'R_shell.pdb') | ForEach-Object { Join-Path $Root "target\release\$_" }
+    foreach ($PdbPath in $PdbCandidates) {
+        if (Test-Path $PdbPath) {
+            Copy-Item $PdbPath $BinDir
+            break
+        }
+    }
 }
 
-Get-ChildItem -Path $MingwBin -Filter '*.dll' | Copy-Item -Destination $BinDir
+$queuedRuntimeFiles = @{}
+$copiedRuntimeFiles = @{}
+$runtimeDependencyQueue = New-Object 'System.Collections.Generic.Queue[string]'
+
+function Queue-RuntimeDependencyScan {
+    param(
+        [string]$FilePath
+    )
+
+    if (-not (Test-Path $FilePath -PathType Leaf)) {
+        return
+    }
+
+    $fullPath = (Resolve-Path $FilePath).Path
+    $key = $fullPath.ToLowerInvariant()
+    if ($queuedRuntimeFiles.ContainsKey($key)) {
+        return
+    }
+
+    $queuedRuntimeFiles[$key] = $true
+    $runtimeDependencyQueue.Enqueue($fullPath)
+}
+
+function Add-MingwRuntimeFileWithDependencies {
+    param(
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path $SourcePath -PathType Leaf)) {
+        return
+    }
+
+    $fullPath = (Resolve-Path $SourcePath).Path
+    $key = $fullPath.ToLowerInvariant()
+    if (-not $copiedRuntimeFiles.ContainsKey($key)) {
+        Copy-Item $fullPath (Join-Path $BinDir (Split-Path $fullPath -Leaf)) -Force
+        $copiedRuntimeFiles[$key] = $true
+    }
+    Queue-RuntimeDependencyScan $fullPath
+}
+
+Queue-RuntimeDependencyScan $BuildExePath
 
 foreach ($helper in @('gspawn-win64-helper.exe', 'gspawn-win64-helper-console.exe', 'gdbus.exe')) {
     $helperPath = Join-Path $MingwBin $helper
     if (Test-Path $helperPath) {
-        Copy-Item $helperPath $BinDir
+        Add-MingwRuntimeFileWithDependencies $helperPath
     }
 }
 
@@ -107,6 +180,20 @@ foreach ($name in $libDirs) {
     $source = Join-Path $MingwLib $name
     if (Test-Path $source) {
         Copy-Item $source (Join-Path $LibDir $name) -Recurse
+    }
+}
+
+Get-ChildItem -Path $LibDir -Recurse -File |
+    Where-Object { $_.Extension -in @('.dll', '.exe') } |
+    ForEach-Object { Queue-RuntimeDependencyScan $_.FullName }
+
+while ($runtimeDependencyQueue.Count -gt 0) {
+    $currentFile = $runtimeDependencyQueue.Dequeue()
+    foreach ($dllName in Get-PeDllNames $currentFile) {
+        $candidate = Join-Path $MingwBin $dllName
+        if (Test-Path $candidate -PathType Leaf) {
+            Add-MingwRuntimeFileWithDependencies $candidate
+        }
     }
 }
 
@@ -153,14 +240,6 @@ foreach ($relativePath in $toolchainConfigPaths) {
 
 $MsysRootFull = (Resolve-Path $MsysRoot).Path.TrimEnd('\')
 $toolchainBinaryDirs = @($UsrBin, $MingwBin)
-$ObjdumpPath = Join-Path $MingwBin 'objdump.exe'
-if (-not (Test-Path $ObjdumpPath)) {
-    $ObjdumpCommand = Get-Command objdump -ErrorAction SilentlyContinue
-    if ($null -eq $ObjdumpCommand) {
-        throw 'objdump.exe was not found. It is required to build a slim command toolchain package.'
-    }
-    $ObjdumpPath = $ObjdumpCommand.Source
-}
 
 function Get-ToolchainRelativePath {
     param(
@@ -215,19 +294,6 @@ function Resolve-ToolchainBinary {
         }
     }
     $null
-}
-
-function Get-PeDllNames {
-    param(
-        [string]$FilePath
-    )
-
-    & $ObjdumpPath -p $FilePath 2>$null |
-        ForEach-Object {
-            if ($_ -match 'DLL Name:\s*(.+)$') {
-                $matches[1].Trim()
-            }
-        }
 }
 
 $copiedToolFiles = @{}
@@ -328,7 +394,7 @@ if ($missingPackagedToolCommands.Count -gt 0) {
     throw "Packaged toolchain is missing required commands: $($missingPackagedToolCommands -join ', ')"
 }
 
-$ExePath = Join-Path $BinDir 'shell-app.exe'
+$ExePath = Join-Path $BinDir $AppExeName
 Write-Host "Packaged GTK app to $ExePath"
 Write-Host "Bundled command toolchain to $ToolsRoot"
 

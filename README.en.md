@@ -1,8 +1,8 @@
-# Shell
+# R-shell
 
 <a href="README.md"><kbd>中文</kbd></a> <kbd>English</kbd>
 
-Shell is a GTK4/gtk-rs based cross-platform terminal client MVP written in Rust.
+R-shell is a GTK4/gtk-rs based cross-platform terminal client MVP written in Rust.
 The project is structured around a lightweight terminal core, protocol adapters, and a GTK4 UI that is enabled explicitly with the `gtk-ui` feature.
 
 ## Current MVP Scope
@@ -40,9 +40,9 @@ Release GUI build:
 cargo build -p shell-app --release --features gtk-ui
 ```
 
-`target\release\shell-app.exe` is Cargo's raw build output. It is useful for local development, but on Windows it is not a self-contained GTK app by itself.
+`target\release\R-shell.exe` is Cargo's raw build output. It is useful for local development, but on Windows it is not a self-contained GTK app by itself.
 
-On Windows, `target\release\shell-app.exe` is not a self-contained GTK bundle by itself. To build a double-clickable package with the required GTK runtime files, use:
+On Windows, `target\release\R-shell.exe` is not a self-contained GTK bundle by itself. To build a double-clickable package with the required GTK runtime files, use:
 
 ```powershell
 .\scripts\package-gtk.ps1
@@ -57,7 +57,7 @@ To package and immediately verify that the bundled app starts correctly:
 Then launch:
 
 ```text
-dist\windows-gtk\bin\shell-app.exe
+dist\windows-gtk\R-shell.exe
 ```
 
 In this workspace, `target` is the compiler output/cache directory and `dist` is the distributable package directory. Keep using `target` for builds and `dist` for the portable bundle you hand to users.
@@ -84,15 +84,15 @@ Package the Windows GTK build locally:
 The script generates:
 
 ```text
-dist\windows-gtk\bin\shell-app.exe
+dist\windows-gtk\R-shell.exe
 ```
 
 To upload a package manually to GitHub Releases, zip the distributable folder first:
 
 ```powershell
 $Version = "v0.1.0"
-$Archive = "shell-windows-gtk-$Version.zip"
-Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Force
+$Archive = "R-shell-windows-gtk-$Version.zip"
+Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -CompressionLevel Optimal -Force
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
 ```
 

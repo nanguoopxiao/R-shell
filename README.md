@@ -1,8 +1,8 @@
-# Shell
+# R-shell
 
 <kbd>中文</kbd> <a href="README.en.md"><kbd>English</kbd></a>
 
-Shell 是一个使用 Rust 编写的 GTK4/gtk-rs 跨平台终端客户端 MVP。
+R-shell 是一个使用 Rust 编写的 GTK4/gtk-rs 跨平台终端客户端 MVP。
 项目围绕轻量级终端核心、协议适配层和 GTK4 UI 组织；GTK4 界面通过 `gtk-ui` feature 显式启用，核心 crate 可以在没有 GTK4 系统库的环境中构建和测试。
 
 ## 当前 MVP 范围
@@ -40,7 +40,7 @@ cargo run -p shell-app --features gtk-ui
 cargo build -p shell-app --release --features gtk-ui
 ```
 
-`target\release\shell-app.exe` 是 Cargo 的原始构建产物，适合本地开发使用；但在 Windows 上，它本身不是一个可双击分发的完整 GTK 应用包。
+`target\release\R-shell.exe` 是 Cargo 的原始构建产物，适合本地开发使用；但在 Windows 上，它本身不是一个可双击分发的完整 GTK 应用包。
 
 在 Windows 上构建包含 GTK 运行时文件的可分发包：
 
@@ -57,7 +57,7 @@ cargo build -p shell-app --release --features gtk-ui
 然后启动：
 
 ```text
-dist\windows-gtk\bin\shell-app.exe
+dist\windows-gtk\R-shell.exe
 ```
 
 本项目中，`target` 是编译输出和缓存目录，`dist` 是交付给用户的可分发目录。构建继续使用 `target`，发布包继续输出到 `dist`。
@@ -84,15 +84,15 @@ dist\windows-gtk\bin\shell-app.exe
 脚本会生成：
 
 ```text
-dist\windows-gtk\bin\shell-app.exe
+dist\windows-gtk\R-shell.exe
 ```
 
 如果要手动上传到 GitHub Releases，先把发布目录压缩成 zip：
 
 ```powershell
 $Version = "v0.1.0"
-$Archive = "shell-windows-gtk-$Version.zip"
-Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Force
+$Archive = "R-shell-windows-gtk-$Version.zip"
+Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -CompressionLevel Optimal -Force
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
 ```
 

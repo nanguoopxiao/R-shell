@@ -160,7 +160,7 @@ fn build_ui(app: &Application) {
     let session_tab_strip = build_session_tab_strip(&initial_language);
 
     let header = HeaderBar::builder()
-        .title_widget(&Label::new(Some("Shell")))
+        .title_widget(&Label::new(Some("R-shell")))
         .build();
     header.add_css_class("app-header");
     let new_session_btn = Button::with_label(tr(&initial_language, "新建", "New"));
@@ -246,7 +246,7 @@ fn build_ui(app: &Application) {
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("Shell")
+        .title("R-shell")
         .default_width(1360)
         .default_height(800)
         .child(&root)
@@ -4190,8 +4190,8 @@ fn build_settings_page(state: &AppState) -> ScrolledWindow {
                 if renderer_changed {
                     state_for_save.status.set_text(tr(
                         &language,
-                        "设置已更新。渲染器变更需要重启 Shell 后生效。",
-                        "Settings updated. Restart Shell to apply the renderer change.",
+                        "设置已更新。渲染器变更需要重启 R-shell 后生效。",
+                        "Settings updated. Restart R-shell to apply the renderer change.",
                     ));
                 } else {
                     state_for_save
