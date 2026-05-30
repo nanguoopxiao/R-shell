@@ -1,0 +1,31 @@
+# Rust build outputs
+/target/
+*.pdb
+*.profraw
+
+# Packaged app outputs and test artifacts
+/dist/
+/artifacts/
+/ui-probes/
+
+# Local development runtimes and installers
+/.msys64/
+msys2-installer.exe
+
+# Editor and machine-local files
+/.idea/
+/.vscode/
+*.log
+*.local
+.env
+.env.*
+
+# Local app state and credentials should never be committed
+**/secrets.json
+**/profiles.json
+**/settings.json
+**/local-terminals-cache.json
+
+# Root-level screenshots captured during UI debugging
+/*.png
+

@@ -1,0 +1,11 @@
+[package]
+name = "shell-terminal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+shell-core = { path = "../core" }
+unicode-width.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "shell-renderer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gtk = ["dep:gtk4", "dep:pangocairo"]
+
+[dependencies]
+gtk4 = { workspace = true, optional = true }
+pangocairo = { workspace = true, optional = true }
+shell-core = { path = "../core" }
+shell-terminal = { path = "../terminal" }

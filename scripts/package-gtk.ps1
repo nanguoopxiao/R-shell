@@ -1,0 +1,184 @@
+param(
+    [string]$Destination = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'dist\windows-gtk'),
+    [switch]$SmokeTest
+)
+
+$ErrorActionPreference = 'Stop'
+
+$Root = Resolve-Path (Join-Path $PSScriptRoot '..')
+$MsysRoot = Join-Path $Root '.msys64'
+$MingwBin = Join-Path $MsysRoot 'mingw64\bin'
+$UsrBin = Join-Path $MsysRoot 'usr\bin'
+$MingwShare = Join-Path $MsysRoot 'mingw64\share'
+$MingwLib = Join-Path $MsysRoot 'mingw64\lib'
+$CargoBin = Join-Path $HOME '.cargo\bin'
+
+if (-not (Test-Path $MingwBin)) {
+    throw "MSYS2 GTK4 dependencies were not found at $MingwBin. See README.md for setup steps."
+}
+
+if (-not (Test-Path (Join-Path $CargoBin 'cargo.exe'))) {
+    $CargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($null -eq $CargoCommand) {
+        throw 'cargo.exe was not found. Install Rust with rustup first.'
+    }
+    $CargoBin = Split-Path $CargoCommand.Source
+}
+
+$env:PATH = "$CargoBin;$MingwBin;$UsrBin;$env:PATH"
+$env:PKG_CONFIG_PATH = "$(Join-Path $MsysRoot 'mingw64\lib\pkgconfig');$(Join-Path $MsysRoot 'mingw64\share\pkgconfig')"
+$env:XDG_DATA_DIRS = "$(Join-Path $MsysRoot 'mingw64\share');$(Join-Path $MsysRoot 'usr\share')"
+
+Set-Location $Root
+
+cargo build -p shell-app --release --features gtk-ui
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+$BinDir = Join-Path $Destination 'bin'
+$ShareDir = Join-Path $Destination 'share'
+$LibDir = Join-Path $Destination 'lib'
+$ToolsRoot = Join-Path $Destination 'tools\msys64'
+
+if (Test-Path $Destination) {
+    Remove-Item $Destination -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $BinDir | Out-Null
+New-Item -ItemType Directory -Path $ShareDir | Out-Null
+New-Item -ItemType Directory -Path $LibDir | Out-Null
+New-Item -ItemType Directory -Path $ToolsRoot | Out-Null
+
+Copy-Item (Join-Path $Root 'target\release\shell-app.exe') $BinDir
+
+$PdbPath = Join-Path $Root 'target\release\shell_app.pdb'
+if (Test-Path $PdbPath) {
+    Copy-Item $PdbPath $BinDir
+}
+
+Get-ChildItem -Path $MingwBin -Filter '*.dll' | Copy-Item -Destination $BinDir
+
+foreach ($helper in @('gspawn-win64-helper.exe', 'gspawn-win64-helper-console.exe', 'gdbus.exe')) {
+    $helperPath = Join-Path $MingwBin $helper
+    if (Test-Path $helperPath) {
+        Copy-Item $helperPath $BinDir
+    }
+}
+
+$shareDirs = @('glib-2.0', 'gtk-4.0', 'icons', 'fontconfig')
+foreach ($name in $shareDirs) {
+    $source = Join-Path $MingwShare $name
+    if (Test-Path $source) {
+        Copy-Item $source (Join-Path $ShareDir $name) -Recurse
+    }
+}
+
+$libDirs = @('gdk-pixbuf-2.0', 'gio')
+foreach ($name in $libDirs) {
+    $source = Join-Path $MingwLib $name
+    if (Test-Path $source) {
+        Copy-Item $source (Join-Path $LibDir $name) -Recurse
+    }
+}
+
+function Copy-ToolchainPath {
+    param(
+        [string]$RelativePath
+    )
+
+    $source = Join-Path $MsysRoot $RelativePath
+    if (-not (Test-Path $source)) {
+        return
+    }
+
+    $target = Join-Path $ToolsRoot $RelativePath
+    $parent = Split-Path $target -Parent
+    if (-not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent | Out-Null
+    }
+    Copy-Item $source $target -Recurse
+}
+
+$toolchainPaths = @(
+    'etc\msystem',
+    'etc\msystem.d',
+    'etc\pki',
+    'etc\profile',
+    'etc\profile.d',
+    'mingw64\bin',
+    'mingw64\etc',
+    'mingw64\ssl',
+    'mingw64\share\licenses',
+    'usr\bin',
+    'usr\etc',
+    'usr\lib',
+    'usr\ssl',
+    'usr\share\licenses',
+    'usr\share\terminfo'
+)
+
+foreach ($relativePath in $toolchainPaths) {
+    Copy-ToolchainPath $relativePath
+}
+
+foreach ($runtimeDir in @('home', 'tmp', 'var\tmp')) {
+    $path = Join-Path $ToolsRoot $runtimeDir
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Path $path | Out-Null
+    }
+}
+
+function Test-ToolchainCommand {
+    param(
+        [string]$CommandName
+    )
+
+    $candidates = @(
+        (Join-Path $ToolsRoot "usr\bin\$CommandName.exe"),
+        (Join-Path $ToolsRoot "mingw64\bin\$CommandName.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $true
+        }
+    }
+    return $false
+}
+
+$requiredToolCommands = @('bash', 'sh', 'curl', 'wget', 'ssh', 'telnet')
+$missingToolCommands = @($requiredToolCommands | Where-Object { -not (Test-ToolchainCommand $_) })
+if ($missingToolCommands.Count -gt 0) {
+    throw "Packaged toolchain is missing required commands: $($missingToolCommands -join ', ')"
+}
+
+$ExePath = Join-Path $BinDir 'shell-app.exe'
+Write-Host "Packaged GTK app to $ExePath"
+Write-Host "Bundled command toolchain to $ToolsRoot"
+
+if ($SmokeTest) {
+    Write-Host 'Running startup smoke test...'
+    $process = Start-Process -FilePath $ExePath -WorkingDirectory $BinDir -PassThru
+    try {
+        $ready = $false
+        try {
+            $ready = $process.WaitForInputIdle(5000)
+        } catch {
+            $ready = $false
+        }
+
+        $process.Refresh()
+        if ($process.HasExited) {
+            throw "Smoke test failed: packaged app exited early with code $($process.ExitCode)."
+        }
+        if (-not $ready -and $process.MainWindowHandle -eq 0) {
+            throw 'Smoke test failed: packaged app did not reach an interactive GUI state.'
+        }
+
+        Write-Host "Smoke test passed: $ExePath started successfully"
+    } finally {
+        if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+            Stop-Process -Id $process.Id -Force
+        }
+    }
+}
