@@ -73,6 +73,38 @@ dist\windows-gtk\bin\shell-app.exe
 .\scripts\dev-gtk.ps1 run
 ```
 
+## 发布版本
+
+本地打包 Windows GTK 版本：
+
+```powershell
+.\scripts\package-gtk.ps1 -SmokeTest
+```
+
+脚本会生成：
+
+```text
+dist\windows-gtk\bin\shell-app.exe
+```
+
+如果要手动上传到 GitHub Releases，先把发布目录压缩成 zip：
+
+```powershell
+$Version = "v0.1.0"
+$Archive = "shell-windows-gtk-$Version.zip"
+Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Force
+Get-FileHash -Algorithm SHA256 $Archive | Format-List
+```
+
+仓库也包含自动发布工作流。创建并推送 `v*` tag 后，GitHub Actions 会自动构建 Windows GTK 包、生成 zip 和 `.sha256` 校验文件，并创建 GitHub Release：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+发布新版本前建议同步更新 [Cargo.toml](Cargo.toml) 里的 workspace 版本号，例如从 `0.1.0` 改到 `0.1.1`。如果只是测试打包流程，也可以在 GitHub Actions 页面手动运行 `Release` workflow；手动运行不会创建 Release，只会生成可下载的 workflow artifact。
+
 ## 连接能力
 
 GTK 应用启动时会打开一个本地 shell 页签。连接栏当前支持：

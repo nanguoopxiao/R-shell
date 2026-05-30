@@ -73,6 +73,38 @@ With the local MSYS2 setup used by this workspace:
 .\scripts\dev-gtk.ps1 run
 ```
 
+## Releases
+
+Package the Windows GTK build locally:
+
+```powershell
+.\scripts\package-gtk.ps1 -SmokeTest
+```
+
+The script generates:
+
+```text
+dist\windows-gtk\bin\shell-app.exe
+```
+
+To upload a package manually to GitHub Releases, zip the distributable folder first:
+
+```powershell
+$Version = "v0.1.0"
+$Archive = "shell-windows-gtk-$Version.zip"
+Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -Force
+Get-FileHash -Algorithm SHA256 $Archive | Format-List
+```
+
+This repository also includes an automated release workflow. Push a `v*` tag and GitHub Actions will build the Windows GTK package, create a zip file plus a `.sha256` checksum, and publish a GitHub Release:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Before publishing a new version, update the workspace version in [Cargo.toml](Cargo.toml), for example from `0.1.0` to `0.1.1`. To test packaging without creating a Release, run the `Release` workflow manually from the GitHub Actions page; manual runs upload a workflow artifact instead of publishing a Release.
+
 ## Connection MVP
 
 The GTK app opens a local shell tab on startup. The connection bar supports:

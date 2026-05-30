@@ -6,7 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$MsysRoot = Join-Path $Root '.msys64'
+$MsysRoot = if ($env:MSYS2_ROOT) {
+    $env:MSYS2_ROOT
+} else {
+    Join-Path $Root '.msys64'
+}
 $MingwBin = Join-Path $MsysRoot 'mingw64\bin'
 $UsrBin = Join-Path $MsysRoot 'usr\bin'
 $MingwShare = Join-Path $MsysRoot 'mingw64\share'
@@ -41,7 +45,26 @@ $ShareDir = Join-Path $Destination 'share'
 $LibDir = Join-Path $Destination 'lib'
 $ToolsRoot = Join-Path $Destination 'tools\msys64'
 
+function Stop-PackagedRuntimeProcesses {
+    param(
+        [string]$PackageBinDir
+    )
+
+    if (-not (Test-Path $PackageBinDir)) {
+        return
+    }
+
+    $resolvedBinDir = (Resolve-Path $PackageBinDir).Path.TrimEnd('\')
+    $processNames = @('gdbus', 'gspawn-win64-helper', 'gspawn-win64-helper-console')
+    Get-Process -Name $processNames -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Path -and $_.Path.StartsWith($resolvedBinDir, [StringComparison]::OrdinalIgnoreCase)
+        } |
+        Stop-Process -Force
+}
+
 if (Test-Path $Destination) {
+    Stop-PackagedRuntimeProcesses $BinDir
     Remove-Item $Destination -Recurse -Force
 }
 
@@ -180,5 +203,6 @@ if ($SmokeTest) {
         if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
             Stop-Process -Id $process.Id -Force
         }
+        Stop-PackagedRuntimeProcesses $BinDir
     }
 }

@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-gtk:
+    name: Windows GTK package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install MSYS2 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            base-devel
+            bash
+            ca-certificates
+            coreutils
+            curl
+            findutils
+            gawk
+            gzip
+            grep
+            inetutils
+            less
+            openssh
+            sed
+            tar
+            unzip
+            wget
+            xz
+            zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gtk4
+            mingw-w64-x86_64-pkg-config
+
+      - name: Package Windows GTK app
+        shell: pwsh
+        env:
+          MSYS2_ROOT: C:\msys64
+        run: .\scripts\package-gtk.ps1 -SmokeTest
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version -or $version -eq "main") {
+            $version = "manual-${{ github.run_number }}"
+          }
+          $archive = "shell-windows-gtk-$version.zip"
+          Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $archive -Force
+          $hash = Get-FileHash -Algorithm SHA256 $archive
+          "$($hash.Hash)  $archive" | Set-Content -Encoding ascii "$archive.sha256"
+          "archive=$archive" >> $env:GITHUB_ENV
+
+      - name: Upload workflow artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.archive }}
+          path: |
+            ${{ env.archive }}
+            ${{ env.archive }}.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.archive }}
+            ${{ env.archive }}.sha256
+          generate_release_notes: true

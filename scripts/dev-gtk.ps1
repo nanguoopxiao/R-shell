@@ -6,7 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$MsysRoot = Join-Path $Root '.msys64'
+$MsysRoot = if ($env:MSYS2_ROOT) {
+    $env:MSYS2_ROOT
+} else {
+    Join-Path $Root '.msys64'
+}
 $MingwBin = Join-Path $MsysRoot 'mingw64\bin'
 $UsrBin = Join-Path $MsysRoot 'usr\bin'
 $CargoBin = Join-Path $HOME '.cargo\bin'
