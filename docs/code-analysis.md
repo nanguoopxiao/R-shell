@@ -84,7 +84,20 @@ cargo test -p shell-terminal parses_long_split_utf8_stream_without_losing_tail
 
 ## 4. GTK UI 组织
 
-`crates/app/src/gtk_app.rs` 是主 UI 文件，核心结构包括：
+GTK UI 入口仍然是 `crates/app/src/gtk_app.rs`，但大块功能已经拆到
+`crates/app/src/gtk_app/` 下的子模块里，避免把所有 GTK 回调、页签布局、
+SFTP 浏览器和格式化辅助函数都塞在一个文件中。
+
+当前拆分如下：
+
+| 文件 | 职责 |
+| --- | --- |
+| `crates/app/src/gtk_app.rs` | 应用启动、主窗口布局、全局 `AppState`、profile/settings 表单、类终端会话创建、SSH 重连、host stats 和通用后台任务调度。 |
+| `crates/app/src/gtk_app/session_tabs.rs` | 自定义会话页签栏、页签宽度计算、页签同步、关闭/激活页面、Notebook 页签标签辅助函数。 |
+| `crates/app/src/gtk_app/sftp_ui.rs` | SFTP sidebar/full tab UI、文件列表渲染、上传/下载/复制/压缩/chmod 等按钮与右键菜单、SFTP profile/tab 绑定。 |
+| `crates/app/src/gtk_app/formatting.rs` | host stats、字节大小、Unix 权限、时间戳和 uptime 等显示格式化函数。 |
+
+`crates/app/src/gtk_app.rs` 中的核心结构包括：
 
 - `AppState`
   - GTK callbacks 共享的状态集合，包含 window、notebook、profiles、settings、terminal widgets、page contexts、connections、popover、SFTP sidebar 等。
@@ -98,6 +111,13 @@ cargo test -p shell-terminal parses_long_split_utf8_stream_without_losing_tail
   - 页面关闭时执行协议 shutdown、清除 IO handler，避免 reader/PTY 泄漏。
 - `SshReconnectSession`
   - 每个 SSH 页签独立的断线重连状态。
+
+拆分原则：
+
+- 子模块只承接已经自然成团的 UI 逻辑，第一轮拆分不改变 `AppState` 的数据形状。
+- 子模块通过 `pub(super)` 暴露少量入口给 `gtk_app.rs`，内部辅助函数尽量留在模块内。
+- 后续新增 SFTP 行为优先放在 `sftp_ui.rs`；新增页签行为优先放在 `session_tabs.rs`。
+- 如果某段逻辑不依赖 GTK widget，应优先放到协议、存储、终端或格式化辅助层，而不是继续扩大 `gtk_app.rs`。
 
 页签关闭关键点：
 
@@ -133,6 +153,7 @@ SFTP 位于 `crates/protocol/src/sftp.rs` 和 `crates/app/src/gtk_app.rs` 两层
 - 协议层 `SftpSession`
   - 负责 connect、list、cd、upload/download、resume、recursive transfer、mkdir、delete、rename、chmod、copy、compress。
   - `Sftp`、`Session`、cwd 均在 `Arc<Mutex<_>>` 中，便于 GTK 后台任务 clone session。
+  - 锁获取失败会转换为 `anyhow::Result` 错误返回给 UI，不在生产路径中直接 `unwrap()`；这样后台任务异常不会把整个应用带崩。
 - UI 层 `SftpSidebar`
   - 负责 compact/full 两种布局、列表、右键菜单、上传/下载文件选择器、拖拽上传、进度条和状态文本。
 

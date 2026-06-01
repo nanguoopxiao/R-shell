@@ -6,9 +6,10 @@
 
 - 源码和文档提交到 Git；`target/`、`dist/`、`.msys64/` 等构建产物不提交。
 - 日常开发只推送 `main` 分支；公开下载包通过 `v*` tag 触发 GitHub Actions 生成。
-- 当前项目版本仍为 `0.1.0`，发布 tag 使用 `v0.1.0`。
+- 当前项目版本仍为 `0.1.0`，发布 tag 使用与 Cargo workspace version 对应的 `v*` 语义化版本。
 - Release 包由 `.github/workflows/release.yml` 自动生成，不手动上传本地 zip，除非 Actions 故障需要临时处理。
 - 每次发布前先保证工作区干净，并至少跑一次本地格式、测试和打包验证。
+- 项目许可证为 GPLv3；发布前应确认根目录 `LICENSE` 和 `Cargo.toml` 的 SPDX 许可证标识保持一致。
 
 ## 日常代码推送
 
@@ -66,9 +67,9 @@ git status --short --branch
 
 `dist/` 里的体验包和 zip 是构建产物，应保持被 Git 忽略。
 
-## 使用当前版本 v0.1.0 重新发布
+## 重新触发同一版本发布
 
-当前阶段如果不想提升版本号，继续使用 `v0.1.0`。因为远端已经存在这个 tag，需要把 tag 移动到最新提交并强制推送该 tag。
+正常开发优先发布新的补丁版本，例如 `v0.1.1`、`v0.1.2`。只有当某个刚发布的同版本资产损坏、且确定还没有把该 tag 当作稳定版本传播时，才考虑移动同一个 tag 重新触发发布。
 
 确认 `main` 已推送到远端：
 
@@ -82,7 +83,7 @@ git push origin main
 git tag -f -a v0.1.0 -m "R-shell v0.1.0"
 ```
 
-推送 tag 并触发 Release workflow：
+强制推送 tag 并触发 Release workflow：
 
 ```powershell
 git push origin refs/tags/v0.1.0 --force
@@ -118,7 +119,7 @@ git push origin main
 git push origin refs/tags/v0.1.1
 ```
 
-新版本 tag 不需要 `--force`。只有复用已经存在的 tag 时才需要强制推送 tag。
+新版本 tag 不需要 `--force`。只有上面“重新触发同一版本发布”的特殊情况才强制推送 tag。
 
 ## Release 说明怎么生成
 

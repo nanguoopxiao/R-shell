@@ -11,7 +11,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     net::TcpStream,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 /// SFTP 连接配置。
@@ -100,14 +100,14 @@ impl SftpSession {
     }
 
     /// 返回当前远端工作目录。
-    pub fn cwd(&self) -> PathBuf {
-        self.cwd.lock().unwrap().clone()
+    pub fn cwd(&self) -> Result<PathBuf> {
+        Ok(self.cwd_guard()?.clone())
     }
 
     /// 切换当前远端工作目录。
     pub fn cd(&self, path: &str) -> Result<()> {
-        let new_path = self.resolve_remote_path(path);
-        let sftp = self.sftp.lock().unwrap();
+        let new_path = self.resolve_remote_path(path)?;
+        let sftp = self.sftp_guard()?;
         let stat = sftp
             .stat(&new_path)
             .with_context(|| format!("checking remote directory {}", new_path.display()))?;
@@ -115,22 +115,40 @@ impl SftpSession {
             anyhow::bail!("{} is not a directory", new_path.display());
         }
         drop(sftp);
-        *self.cwd.lock().unwrap() = new_path;
+        *self.cwd_guard()? = new_path;
         Ok(())
     }
 
-    fn resolve_remote_path(&self, path: &str) -> PathBuf {
-        resolve_remote_path(&self.cwd(), path)
+    fn resolve_remote_path(&self, path: &str) -> Result<PathBuf> {
+        Ok(resolve_remote_path(&self.cwd()?, path))
+    }
+
+    fn sftp_guard(&self) -> Result<MutexGuard<'_, Sftp>> {
+        self.sftp
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SFTP session state is unavailable"))
+    }
+
+    fn ssh_guard(&self) -> Result<MutexGuard<'_, Session>> {
+        self.ssh
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SSH session state is unavailable"))
+    }
+
+    fn cwd_guard(&self) -> Result<MutexGuard<'_, PathBuf>> {
+        self.cwd
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SFTP current directory state is unavailable"))
     }
 
     /// 列出当前工作目录中的文件。
     pub fn list(&self) -> Result<Vec<SftpEntry>> {
-        let cwd = self.cwd();
+        let cwd = self.cwd()?;
         self.list_at(&cwd)
     }
 
     fn list_at(&self, remote_dir: &Path) -> Result<Vec<SftpEntry>> {
-        let sftp = self.sftp.lock().unwrap();
+        let sftp = self.sftp_guard()?;
         let entries = sftp
             .readdir(remote_dir)
             .with_context(|| format!("listing directory {}", remote_dir.display()))?;
@@ -160,8 +178,8 @@ impl SftpSession {
 
     /// 将远端文件下载到本地路径。
     pub fn download(&self, remote_name: &str, local_path: &Path) -> Result<u64> {
-        let remote_path = self.resolve_remote_path(remote_name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(remote_name)?;
+        let sftp = self.sftp_guard()?;
         let mut remote_file = sftp
             .open(&remote_path)
             .with_context(|| format!("opening remote file {}", remote_path.display()))?;
@@ -181,8 +199,8 @@ impl SftpSession {
 
     /// 续传或开始下载远端文件到本地路径。
     pub fn download_resume(&self, remote_name: &str, local_path: &Path) -> Result<u64> {
-        let remote_path = self.resolve_remote_path(remote_name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(remote_name)?;
+        let sftp = self.sftp_guard()?;
         let remote_size = sftp
             .stat(&remote_path)
             .with_context(|| format!("checking remote file {}", remote_path.display()))?
@@ -230,13 +248,13 @@ impl SftpSession {
 
     /// 下载远端文件或目录树到本地目录，能续传时优先续传。
     pub fn download_recursive(&self, remote_name: &str, local_dir: &Path) -> Result<u64> {
-        let remote_path = self.resolve_remote_path(remote_name);
+        let remote_path = self.resolve_remote_path(remote_name)?;
         let local_root = local_dir.join(remote_name.trim_matches('/'));
         self.download_tree(&remote_path, &local_root)
     }
 
     fn download_tree(&self, remote_path: &Path, local_path: &Path) -> Result<u64> {
-        let sftp = self.sftp.lock().unwrap();
+        let sftp = self.sftp_guard()?;
         let stat = sftp
             .stat(remote_path)
             .with_context(|| format!("checking remote path {}", remote_path.display()))?;
@@ -261,8 +279,8 @@ impl SftpSession {
 
     /// 上传本地文件到当前远端目录。
     pub fn upload(&self, local_path: &Path, remote_name: &str) -> Result<u64> {
-        let remote_path = self.resolve_remote_path(remote_name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(remote_name)?;
+        let sftp = self.sftp_guard()?;
         let mut remote_file = sftp
             .create(&remote_path)
             .with_context(|| format!("creating remote file {}", remote_path.display()))?;
@@ -275,7 +293,7 @@ impl SftpSession {
 
     /// 续传或开始上传本地文件到当前远端目录。
     pub fn upload_resume(&self, local_path: &Path, remote_name: &str) -> Result<u64> {
-        let remote_path = self.resolve_remote_path(remote_name);
+        let remote_path = self.resolve_remote_path(remote_name)?;
         let mut local_file = std::fs::File::open(local_path)
             .with_context(|| format!("opening local file {}", local_path.display()))?;
         let local_size = local_file
@@ -283,7 +301,7 @@ impl SftpSession {
             .with_context(|| format!("checking local file {}", local_path.display()))?
             .len();
 
-        let sftp = self.sftp.lock().unwrap();
+        let sftp = self.sftp_guard()?;
         let remote_size = sftp
             .stat(&remote_path)
             .ok()
@@ -321,7 +339,7 @@ impl SftpSession {
     /// 上传本地文件或目录树，能续传时优先续传。
     pub fn upload_recursive(&self, local_path: &Path, remote_name: &str) -> Result<u64> {
         if local_path.is_dir() {
-            let remote_path = self.resolve_remote_path(remote_name);
+            let remote_path = self.resolve_remote_path(remote_name)?;
             self.upload_tree(local_path, &remote_path)
         } else {
             self.upload_resume(local_path, remote_name)
@@ -330,7 +348,7 @@ impl SftpSession {
 
     fn upload_tree(&self, local_path: &Path, remote_path: &Path) -> Result<u64> {
         {
-            let sftp = self.sftp.lock().unwrap();
+            let sftp = self.sftp_guard()?;
             if sftp.stat(remote_path).is_err() {
                 sftp.mkdir(remote_path, 0o755)
                     .with_context(|| format!("creating directory {}", remote_path.display()))?;
@@ -358,16 +376,16 @@ impl SftpSession {
 
     /// 删除远端文件。
     pub fn delete(&self, name: &str) -> Result<()> {
-        let remote_path = self.resolve_remote_path(name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(name)?;
+        let sftp = self.sftp_guard()?;
         sftp.unlink(&remote_path)
             .with_context(|| format!("deleting {}", remote_path.display()))
     }
 
     /// 删除远端目录。
     pub fn rmdir(&self, name: &str) -> Result<()> {
-        let remote_path = self.resolve_remote_path(name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(name)?;
+        let sftp = self.sftp_guard()?;
         sftp.rmdir(&remote_path)
             .with_context(|| format!("removing directory {}", remote_path.display()))
     }
@@ -383,16 +401,16 @@ impl SftpSession {
 
     /// 创建远端目录。
     pub fn mkdir(&self, name: &str) -> Result<()> {
-        let remote_path = self.resolve_remote_path(name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(name)?;
+        let sftp = self.sftp_guard()?;
         sftp.mkdir(&remote_path, 0o755)
             .with_context(|| format!("creating directory {}", remote_path.display()))
     }
 
     /// 创建空的远端文件。
     pub fn create_file(&self, name: &str) -> Result<()> {
-        let remote_path = self.resolve_remote_path(name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(name)?;
+        let sftp = self.sftp_guard()?;
         let _file = sftp
             .create(&remote_path)
             .with_context(|| format!("creating file {}", remote_path.display()))?;
@@ -401,8 +419,8 @@ impl SftpSession {
 
     /// 修改远端文件或目录的权限。
     pub fn chmod(&self, name: &str, mode: u32) -> Result<()> {
-        let remote_path = self.resolve_remote_path(name);
-        let sftp = self.sftp.lock().unwrap();
+        let remote_path = self.resolve_remote_path(name)?;
+        let sftp = self.sftp_guard()?;
         sftp.setstat(
             &remote_path,
             FileStat {
@@ -418,19 +436,19 @@ impl SftpSession {
     }
 
     /// 返回当前目录条目的标准化远端绝对路径。
-    pub fn absolute_path(&self, name: &str) -> PathBuf {
+    pub fn absolute_path(&self, name: &str) -> Result<PathBuf> {
         self.resolve_remote_path(name)
     }
 
     /// 将远端文件或目录树复制到当前目录。
     pub fn copy_entry(&self, source_path: &str, destination_name: &str) -> Result<u64> {
         let source_path = normalize_remote_path(source_path);
-        let destination_path = self.resolve_remote_path(destination_name);
+        let destination_path = self.resolve_remote_path(destination_name)?;
         self.copy_tree(&source_path, &destination_path)
     }
 
     fn copy_tree(&self, source_path: &Path, destination_path: &Path) -> Result<u64> {
-        let sftp = self.sftp.lock().unwrap();
+        let sftp = self.sftp_guard()?;
         let stat = sftp
             .stat(source_path)
             .with_context(|| format!("checking remote path {}", source_path.display()))?;
@@ -441,7 +459,7 @@ impl SftpSession {
         }
 
         {
-            let sftp = self.sftp.lock().unwrap();
+            let sftp = self.sftp_guard()?;
             if sftp.stat(destination_path).is_err() {
                 sftp.mkdir(destination_path, 0o755).with_context(|| {
                     format!("creating directory {}", destination_path.display())
@@ -459,7 +477,7 @@ impl SftpSession {
     }
 
     fn copy_file(&self, source_path: &Path, destination_path: &Path) -> Result<u64> {
-        let sftp = self.sftp.lock().unwrap();
+        let sftp = self.sftp_guard()?;
         let mut source = sftp
             .open(source_path)
             .with_context(|| format!("opening source file {}", source_path.display()))?;
@@ -471,10 +489,10 @@ impl SftpSession {
 
     /// 将远端条目压缩为当前目录下的 `.tar.gz` 归档。
     pub fn compress_tar_gz(&self, name: &str) -> Result<String> {
-        let source_path = self.resolve_remote_path(name);
-        let cwd = self.cwd();
+        let source_path = self.resolve_remote_path(name)?;
+        let cwd = self.cwd()?;
         let archive_name = format!("{}.tar.gz", archive_stem(name));
-        let archive_path = self.resolve_remote_path(&archive_name);
+        let archive_path = self.resolve_remote_path(&archive_name)?;
         let command = format!(
             "tar -czf {} -C {} {}",
             shell_quote(&path_to_remote_string(&archive_path)),
@@ -487,7 +505,7 @@ impl SftpSession {
             )
         );
 
-        let session = self.ssh.lock().unwrap();
+        let session = self.ssh_guard()?;
         let mut channel = session
             .channel_session()
             .context("opening compression channel")?;
@@ -521,9 +539,9 @@ impl SftpSession {
 
     /// 在当前远端工作目录内重命名文件或目录。
     pub fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let old_path = self.resolve_remote_path(old_name);
-        let new_path = self.resolve_remote_path(new_name);
-        let sftp = self.sftp.lock().unwrap();
+        let old_path = self.resolve_remote_path(old_name)?;
+        let new_path = self.resolve_remote_path(new_name)?;
+        let sftp = self.sftp_guard()?;
         sftp.rename(&old_path, &new_path, None)
             .with_context(|| format!("renaming {} to {}", old_path.display(), new_path.display()))
     }

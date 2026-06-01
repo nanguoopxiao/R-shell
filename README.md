@@ -162,11 +162,19 @@ git push origin main --tags
 - `shell-storage`：profiles、settings、secrets 持久化。
 - `shell-app`：应用入口、GTK4 UI、会话页面和设置页。
 
+`shell-app` 的 GTK UI 入口是 `crates/app/src/gtk_app.rs`，较大的 UI 功能继续拆在
+`crates/app/src/gtk_app/` 下：`session_tabs.rs` 管自定义页签栏，
+`sftp_ui.rs` 管 SFTP 浏览器和文件操作面板，`formatting.rs` 管 UI 显示格式化。
+
 ## 安全说明
 
 - SSH 终端认证默认委托给 OpenSSH 客户端，密码和私钥口令提示保留在 PTY 交互流里。
 - 保存的连接密码会通过系统凭据能力和本地加密 vault 管理，不应写入明文配置文件。
 - 内置命令环境是随应用携带的用户态工具链，不会修改全局系统环境。
+
+## 许可证
+
+R-shell 使用 GPLv3 许可证发布。完整条款见 [LICENSE](LICENSE)。
 
 ## 路线图
 

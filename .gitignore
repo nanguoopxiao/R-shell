@@ -9,6 +9,8 @@
 /dist/
 /artifacts/
 /ui-probes/
+/picture/
+/docs/
 
 # Local development runtimes and installers
 /.msys64/

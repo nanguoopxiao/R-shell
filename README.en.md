@@ -162,11 +162,19 @@ For a more polished product-style announcement, edit the generated GitHub Releas
 - `shell-storage`: profile, settings, and secret persistence.
 - `shell-app`: application entry point, GTK4 UI, session pages, and settings.
 
+The GTK UI entry point for `shell-app` is `crates/app/src/gtk_app.rs`; larger UI areas are split
+under `crates/app/src/gtk_app/`: `session_tabs.rs` owns the custom tab strip,
+`sftp_ui.rs` owns the SFTP browser and file-operation panel, and `formatting.rs` owns UI display formatting.
+
 ## Security Notes
 
 - SSH terminal authentication is delegated to an OpenSSH client by default, keeping password and private-key passphrase prompts inside the PTY interaction stream.
 - Saved connection passwords are managed through system credential support and a local encrypted vault; they should not be written to plaintext config files.
 - The built-in command environment is a user-space toolchain bundled with the app and does not modify the global system environment.
+
+## License
+
+R-shell is released under the GPLv3 license. See [LICENSE](LICENSE) for the full terms.
 
 ## Roadmap
 
