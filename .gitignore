@@ -1,5 +1,7 @@
 # Rust build outputs
 /target/
+/build/
+/.gtk-slim/
 *.pdb
 *.profraw
 *.zip

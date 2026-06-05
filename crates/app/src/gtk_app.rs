@@ -109,19 +109,23 @@ pub fn run() -> anyhow::Result<()> {
         )
         .init();
 
+    trace_startup_memory("before application");
     let app = Application::builder()
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    trace_startup_memory("after application");
     app.connect_activate(build_ui);
     app.run();
     Ok(())
 }
 
 fn build_ui(app: &Application) {
+    trace_startup_memory("activate start");
     if let Some(settings) = gtk4::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(true);
     }
     install_app_css();
+    trace_startup_memory("after css");
 
     let connections = Rc::new(RefCell::new(SessionHandles::default()));
     let notebook = Notebook::builder().hexpand(true).vexpand(true).build();
@@ -144,6 +148,7 @@ fn build_ui(app: &Application) {
     let terminal_appearance = TerminalAppearance::new(app_settings_value.terminal_font.clone());
     terminal_appearance.set_semantic_highlighting(app_settings_value.semantic_highlighting);
     let local_terminals_value = load_or_discover_local_terminals(&app_settings_value);
+    trace_startup_memory("after terminal discovery");
     let app_settings = Rc::new(RefCell::new(app_settings_value));
     let mut loaded_profiles = profile_store.load().unwrap_or_default();
     if remove_local_shell_profiles(&mut loaded_profiles) {
@@ -206,6 +211,7 @@ fn build_ui(app: &Application) {
     sessions_panel.append(&list_scroll);
 
     let sftp_sidebar = build_sftp_sidebar(true, &initial_language);
+    trace_startup_memory("after sftp sidebar");
     let sidebar_stack = Stack::new();
     sidebar_stack.set_hexpand(true);
     sidebar_stack.set_size_request(0, -1);
@@ -268,6 +274,7 @@ fn build_ui(app: &Application) {
         .build();
     window.add_css_class("app-window");
     window.set_titlebar(Some(&header));
+    trace_startup_memory("after window build");
 
     let state = AppState {
         window: window.clone(),
@@ -388,14 +395,69 @@ fn build_ui(app: &Application) {
     sync_workspace_state(&state);
 
     window.present();
+    trace_startup_memory("after present");
     schedule_session_tab_width_cap_capture(&state);
     schedule_debug_local_terminal_autostart(&state);
     schedule_debug_tab_autoclose(&state);
     schedule_startup_memory_trim();
 }
 
+fn trace_startup_memory(label: &str) {
+    if std::env::var_os("SHELL_APP_TRACE_MEMORY").is_none() {
+        return;
+    }
+    eprintln!("startup-memory {label}: {}", process_memory_summary());
+}
+
+#[cfg(windows)]
+fn process_memory_summary() -> String {
+    use std::mem::size_of;
+
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            PageFaultCount: 0,
+            PeakWorkingSetSize: 0,
+            WorkingSetSize: 0,
+            QuotaPeakPagedPoolUsage: 0,
+            QuotaPagedPoolUsage: 0,
+            QuotaPeakNonPagedPoolUsage: 0,
+            QuotaNonPagedPoolUsage: 0,
+            PagefileUsage: 0,
+            PeakPagefileUsage: 0,
+        };
+        let ok = GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        );
+        if ok == 0 {
+            return "unavailable".to_string();
+        }
+        format!(
+            "ws={:.1}MB private={:.1}MB",
+            counters.WorkingSetSize as f64 / 1024.0 / 1024.0,
+            counters.PagefileUsage as f64 / 1024.0 / 1024.0
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn process_memory_summary() -> String {
+    "unavailable".to_string()
+}
+
 #[cfg(windows)]
 fn schedule_startup_memory_trim() {
+    if !working_set_trimming_enabled() {
+        return;
+    }
+
     for seconds in [2_u64, 6, 20] {
         glib::timeout_add_local(Duration::from_secs(seconds), || {
             trim_process_working_set();
@@ -2542,8 +2604,8 @@ fn build_settings_page(state: &AppState) -> ScrolledWindow {
     );
     let renderer_hint = Label::new(Some(tr(
         &language,
-        "Cairo 是 CPU 路径。WebGI/GPU 模式映射到 GTK NGL，需要重启。",
-        "Cairo is the CPU path. WebGI/GPU mode maps to GTK NGL and needs restart.",
+        "Cairo 是 CPU 路径。GL/GPU 模式会启用 GTK GL renderer，并在 Windows 上强制 Direct Composition。",
+        "Cairo is the CPU path. GL/GPU mode enables the GTK GL renderer and forces Direct Composition on Windows.",
     )));
     renderer_hint.set_xalign(0.0);
     renderer_hint.set_wrap(true);
@@ -3047,16 +3109,16 @@ fn populate_font_presets(combo: &StableComboBox, current_font: &str) {
 
 fn populate_renderer_backend_presets(combo: &StableComboBox, current_backend: RendererBackend) {
     combo.append(Some("cairo"), "CPU / Cairo");
-    combo.append(Some("ngl"), "WebGI / GPU (GTK NGL, experimental)");
+    combo.append(Some("gl"), "GL / GPU");
     combo.set_active_id(Some(match current_backend {
         RendererBackend::Cairo => "cairo",
-        RendererBackend::Ngl => "ngl",
+        RendererBackend::Gl => "gl",
     }));
 }
 
 fn renderer_backend_from_combo_id(value: Option<String>) -> RendererBackend {
     match value.as_deref() {
-        Some("ngl") => RendererBackend::Ngl,
+        Some("gl") | Some("ngl") => RendererBackend::Gl,
         _ => RendererBackend::Cairo,
     }
 }
@@ -3315,6 +3377,10 @@ fn schedule_session_handle_prune(state: &AppState) {
 
 #[cfg(windows)]
 fn schedule_post_close_memory_trim() {
+    if !working_set_trimming_enabled() {
+        return;
+    }
+
     for delay in [250_u64, 1_000, 3_000] {
         glib::timeout_add_local(Duration::from_millis(delay), || {
             trim_process_working_set();
@@ -3325,6 +3391,18 @@ fn schedule_post_close_memory_trim() {
 
 #[cfg(not(windows))]
 fn schedule_post_close_memory_trim() {}
+
+#[cfg(windows)]
+fn working_set_trimming_enabled() -> bool {
+    std::env::var("SHELL_APP_TRIM_WORKING_SET")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
 
 fn current_page_context(state: &AppState) -> Option<PageContext> {
     let current_page = state

@@ -32,7 +32,8 @@ pub struct ProfilesDocument {
 pub enum RendererBackend {
     #[default]
     Cairo,
-    Ngl,
+    #[serde(alias = "ngl")]
+    Gl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -725,7 +726,7 @@ mod tests {
         let settings_path = root.join("settings.json");
         let settings = AppSettings {
             terminal_font: "JetBrains Mono 13".to_string(),
-            renderer_backend: RendererBackend::Ngl,
+            renderer_backend: RendererBackend::Gl,
             semantic_highlighting: false,
             language: AppLanguage::EnUs,
             openssh_compatibility: OpensshCompatibilitySettings {
@@ -768,6 +769,25 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.builtin_tools, BuiltinToolsSettings::default());
+    }
+
+    #[test]
+    fn loads_legacy_ngl_renderer_setting_as_gl() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+                "terminal_font": "Consolas 12",
+                "renderer_backend": "ngl",
+                "semantic_highlighting": true,
+                "language": "zh_cn"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(settings.renderer_backend, RendererBackend::Gl);
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["renderer_backend"],
+            "gl"
+        );
     }
 
     #[cfg(windows)]

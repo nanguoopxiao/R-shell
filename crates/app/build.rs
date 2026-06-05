@@ -11,7 +11,29 @@ fn main() {
     }
 
     #[cfg(windows)]
-    compile_windows_resources();
+    {
+        if env::var_os("CARGO_FEATURE_HIGH_PERFORMANCE_GPU").is_some() {
+            export_windows_high_performance_gpu_hints();
+        }
+        compile_windows_resources();
+    }
+}
+
+#[cfg(windows)]
+fn export_windows_high_performance_gpu_hints() {
+    let target = env::var("TARGET").unwrap_or_default();
+    let symbols = [
+        "NvOptimusEnablement",
+        "AmdPowerXpressRequestHighPerformance",
+    ];
+
+    for symbol in symbols {
+        if target.contains("msvc") {
+            println!("cargo:rustc-link-arg-bins=/EXPORT:{symbol}");
+        } else {
+            println!("cargo:rustc-link-arg-bins=-Wl,--export,{symbol}");
+        }
+    }
 }
 
 #[cfg(windows)]

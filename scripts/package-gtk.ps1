@@ -1,5 +1,6 @@
 param(
     [string]$Destination = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'dist\windows-gtk'),
+    [string]$GtkRuntimeBin,
     [switch]$IncludeSymbols,
     [switch]$SmokeTest
 )
@@ -19,12 +20,22 @@ $UsrBin = Join-Path $MsysRoot 'usr\bin'
 $MingwShare = Join-Path $MsysRoot 'mingw64\share'
 $MingwLib = Join-Path $MsysRoot 'mingw64\lib'
 $CargoBin = Join-Path $HOME '.cargo\bin'
+$RuntimeBinSearchDirs = @()
 
 if (-not (Test-Path $MingwBin)) {
     throw "MSYS2 GTK4 dependencies were not found at $MingwBin. See README.md for setup steps."
 }
 
 Write-Host "Using MSYS2 root: $MsysRoot"
+
+if ($GtkRuntimeBin) {
+    if (-not (Test-Path $GtkRuntimeBin)) {
+        throw "GTK runtime bin directory was not found at $GtkRuntimeBin."
+    }
+    $RuntimeBinSearchDirs += (Resolve-Path $GtkRuntimeBin).Path
+    Write-Host "Using GTK runtime override: $($RuntimeBinSearchDirs[0])"
+}
+$RuntimeBinSearchDirs += (Resolve-Path $MingwBin).Path
 
 if (-not (Test-Path (Join-Path $CargoBin 'cargo.exe'))) {
     $CargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
@@ -190,9 +201,12 @@ Get-ChildItem -Path $LibDir -Recurse -File |
 while ($runtimeDependencyQueue.Count -gt 0) {
     $currentFile = $runtimeDependencyQueue.Dequeue()
     foreach ($dllName in Get-PeDllNames $currentFile) {
-        $candidate = Join-Path $MingwBin $dllName
-        if (Test-Path $candidate -PathType Leaf) {
-            Add-MingwRuntimeFileWithDependencies $candidate
+        foreach ($runtimeBin in $RuntimeBinSearchDirs) {
+            $candidate = Join-Path $runtimeBin $dllName
+            if (Test-Path $candidate -PathType Leaf) {
+                Add-MingwRuntimeFileWithDependencies $candidate
+                break
+            }
         }
     }
 }

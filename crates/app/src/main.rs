@@ -3,11 +3,18 @@
     windows_subsystem = "windows"
 )]
 
-// 即使不启用 GTK，本二进制也应保持可构建：CI 和核心逻辑开发不应依赖
-// 系统 GTK4 开发库。真正的图形界面通过 `gtk-ui` feature 显式启用。
-
 #[cfg(feature = "gtk-ui")]
 mod gtk_app;
+
+#[cfg(all(feature = "gtk-ui", feature = "high-performance-gpu", windows))]
+#[used]
+#[unsafe(no_mangle)]
+pub static NvOptimusEnablement: u32 = 1;
+
+#[cfg(all(feature = "gtk-ui", feature = "high-performance-gpu", windows))]
+#[used]
+#[unsafe(no_mangle)]
+pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 #[cfg(all(feature = "gtk-ui", windows))]
 use shell_storage::{RendererBackend, load_settings};
@@ -27,29 +34,32 @@ fn main() {
 
 #[cfg(all(feature = "gtk-ui", windows))]
 fn configure_windows_gtk_runtime() {
-    // 强制 GTK 使用 CPU 路径。MSYS2 GTK4 运行时即使只显示终端界面，也可能
-    // 初始化 D3D、Vulkan 和 GStreamer 媒体栈；让 GDK 加载这些后端会在部分
-    // Windows 虚拟机或特定显卡驱动上额外占用 150MB 以上私有内存。终端渲染
-    // 直接使用 Cairo/Pango，因此不需要这些 GPU 路径。
-    //
-    // 必须在 g_application_run() 初始化 GDK/GSK 之前设置。
     let renderer_backend = load_renderer_backend_setting();
 
     unsafe {
         match renderer_backend {
             RendererBackend::Cairo => {
                 std::env::set_var("GSK_RENDERER", "cairo");
+                std::env::remove_var("GDK_WIN32_FORCE_DCOMP");
+                set_env_csv_without(
+                    "GDK_DISABLE",
+                    &["all", "gl", "vulkan", "d3d11", "d3d12", "dcomp"],
+                );
                 append_env_csv("GDK_DISABLE", &["gl", "vulkan", "d3d11", "d3d12"]);
             }
-            RendererBackend::Ngl => {
-                std::env::set_var("GSK_RENDERER", "ngl");
-                append_env_csv("GDK_DISABLE", &["vulkan"]);
+            RendererBackend::Gl => {
+                std::env::set_var("GSK_RENDERER", "gl");
+                std::env::set_var("GDK_WIN32_FORCE_DCOMP", "1");
+                set_env_csv_without(
+                    "GDK_DISABLE",
+                    &["all", "gl", "gl-api", "gles-api", "wgl", "dcomp", "d3d11"],
+                );
+                append_env_csv("GDK_DISABLE", &["d3d12", "vulkan"]);
             }
         }
+
         std::env::set_var("GIO_USE_VFS", "local");
         std::env::set_var("GSETTINGS_BACKEND", "memory");
-        // 不再设置 GDK_DEBUG=no-offload：GTK4 0.10.x 不识别该调试标志，
-        // 会向 stderr 打印警告。
     }
 
     let Ok(exe_path) = std::env::current_exe() else {
@@ -75,9 +85,6 @@ fn configure_windows_gtk_runtime() {
         return;
     }
 
-    // 从便携发布目录启动时，将 GLib/GDK/Pango 指向随包携带的
-    // 运行时目录。这样可以保持包的可移植性，并避免误加载用户全局 PATH 中
-    // 不兼容的 DLL。
     prepend_env_path("PATH", bin_dir);
     set_env_path("XDG_DATA_DIRS", &share_dir);
 
@@ -100,18 +107,9 @@ fn configure_windows_gtk_runtime() {
         set_env_path("GIO_MODULE_DIR", &gio_modules_dir);
     }
 
-    // 将 fontconfig 限制到随包携带的最小 fonts.conf，避免 Pango/FreeType 扫描
-    // 整个 C:\Windows\Fonts。中文 Windows 中常见 50-100 个 CJK 字体，
-    // SimSun-ExtB 单个字体就约 32MB；仅通过 fontconfig+HarfBuzz 加载元数据
-    // 也可能带来约 100MB 的内存占用。
-    //
-    // 当前 fonts.conf 只白名单终端实际需要的字体：一个等宽字体 + 一个中文
-    // CJK 字体。
     let fonts_conf = prefix_dir.join("etc").join("fonts").join("fonts.conf");
     if fonts_conf.exists() {
         set_env_path("FONTCONFIG_FILE", &fonts_conf);
-        // 将本程序使用的 fontconfig 缓存写到配置旁边，便于多次启动复用，
-        // 避免昂贵的初次扫描反复发生。
         let fc_cache_dir = prefix_dir.join("var").join("cache").join("fontconfig");
         if !fc_cache_dir.exists() {
             let _ = std::fs::create_dir_all(&fc_cache_dir);
@@ -157,13 +155,7 @@ fn set_env_path(name: &str, value: &std::path::Path) {
 
 #[cfg(all(feature = "gtk-ui", windows))]
 fn append_env_csv(name: &str, required_values: &[&str]) {
-    let current = std::env::var(name).unwrap_or_default();
-    let mut values = current
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let mut values = env_csv_values(name);
 
     for required in required_values {
         if !values
@@ -177,6 +169,37 @@ fn append_env_csv(name: &str, required_values: &[&str]) {
     unsafe {
         std::env::set_var(name, values.join(","));
     }
+}
+
+#[cfg(all(feature = "gtk-ui", windows))]
+fn set_env_csv_without(name: &str, removed_values: &[&str]) {
+    let values = env_csv_values(name)
+        .into_iter()
+        .filter(|value| {
+            !removed_values
+                .iter()
+                .any(|removed| value.eq_ignore_ascii_case(removed))
+        })
+        .collect::<Vec<_>>();
+
+    unsafe {
+        if values.is_empty() {
+            std::env::remove_var(name);
+        } else {
+            std::env::set_var(name, values.join(","));
+        }
+    }
+}
+
+#[cfg(all(feature = "gtk-ui", windows))]
+fn env_csv_values(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .unwrap_or_default()
+        .split(|ch| matches!(ch, ':' | ';' | ',' | ' ' | '\t'))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(all(feature = "gtk-ui", not(windows)))]

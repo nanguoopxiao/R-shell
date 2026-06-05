@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   windows-gtk:
-    name: Windows GTK package
+    name: Windows GTK slim package
     runs-on: windows-latest
 
     steps:
@@ -43,6 +43,7 @@ jobs:
             inetutils
             less
             openssh
+            patch
             sed
             tar
             unzip
@@ -51,13 +52,20 @@ jobs:
             zip
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-gtk4
-            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-gobject-introspection
+            mingw-w64-x86_64-sassc
+            mingw-w64-x86_64-python-docutils
+            mingw-w64-x86_64-gi-docgen
+            mingw-w64-x86_64-directx-headers
 
-      - name: Package Windows GTK app
+      - name: Build slim GTK runtime and package Windows GTK app
         shell: pwsh
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
-        run: .\scripts\package-gtk.ps1
+        run: .\scripts\build-gtk-slim.ps1 -Package
 
       - name: Create release archive
         shell: pwsh
@@ -66,8 +74,8 @@ jobs:
           if (-not $version -or $version -eq "main") {
             $version = "manual-${{ github.run_number }}"
           }
-          $archive = "R-shell-windows-gtk-$version.zip"
-          Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $archive -CompressionLevel Optimal -Force
+          $archive = "R-shell-windows-gtk-slim-$version.zip"
+          Compress-Archive -Path "dist\windows-gtk-slim\*" -DestinationPath $archive -CompressionLevel Optimal -Force
           $hash = Get-FileHash -Algorithm SHA256 $archive
           "$($hash.Hash)  $archive" | Set-Content -Encoding ascii "$archive.sha256"
           "archive=$archive" >> $env:GITHUB_ENV
@@ -92,25 +100,25 @@ jobs:
           }
 
           $notes = @(
-            "## 本次更新",
+            "## Changes",
             ""
           )
           if ($previousTag) {
-            $notes += "从 $previousTag 到 $version 的提交摘要："
+            $notes += "Commit summary from $previousTag to $version:"
           } else {
-            $notes += "未找到上一个 tag，以下是最近 20 条提交摘要："
+            $notes += "No previous tag was found. Showing the latest 20 commits:"
           }
           $notes += ""
           if ($commits.Count -gt 0) {
             $notes += $commits
           } else {
-            $notes += "- 首次发布或没有可列出的提交。"
+            $notes += "- Initial release or no commits to list."
           }
           $notes += ""
-          $notes += "## 下载"
+          $notes += "## Downloads"
           $notes += ""
-          $notes += "- $($env:archive)：Windows GTK 完整包"
-          $notes += "- $($env:archive).sha256：SHA256 校验文件"
+          $notes += "- $($env:archive): Windows GTK slim package"
+          $notes += "- $($env:archive).sha256: SHA256 checksum"
 
           Set-Content -Encoding utf8 -Path release-notes.md -Value $notes
 
