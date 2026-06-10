@@ -166,10 +166,14 @@ fn build_ui(app: &Application) {
         .title_widget(&Label::new(Some("R-shell")))
         .build();
     header.add_css_class("app-header");
-    let new_session_btn = Button::with_label(tr(&initial_language, "新建", "New"));
-    let settings_btn = Button::with_label(tr(&initial_language, "设置", "Settings"));
-    new_session_btn.add_css_class("toolbar-button");
-    settings_btn.add_css_class("toolbar-button");
+    let new_session_btn = build_header_icon_button(
+        "list-add-symbolic",
+        tr(&initial_language, "新建会话", "New session"),
+    );
+    let settings_btn = build_header_icon_button(
+        "preferences-system-symbolic",
+        tr(&initial_language, "设置", "Settings"),
+    );
     header.pack_start(&new_session_btn);
     header.pack_end(&settings_btn);
 
@@ -517,7 +521,7 @@ fn install_app_css() {
             outline-offset: 0;
         }
         button, entry, combobox button, listbox row, .session-tab-item, .sidebar-nav-button,
-        .sftp-toolbar-button, .profile-actions-button, popover > contents,
+        .toolbar-icon-button, .sftp-toolbar-button, .profile-actions-button, popover > contents,
         .settings-page, .settings-card, .new-session-form, .dialog-content,
         .protocol-page, notebook, notebook > stack, stack, .empty-workspace, .app-status-bar {
             transition-property: background-color, border-color, color, opacity, box-shadow;
@@ -610,6 +614,15 @@ fn install_app_css() {
             min-height: 34px;
             padding: 4px;
             border-radius: 6px;
+            border-color: transparent;
+            background: transparent;
+            background-color: transparent;
+            background-image: none;
+            box-shadow: none;
+        }
+        .profile-sftp-button:hover {
+            background-color: #203247;
+            border-color: #34506c;
         }
         .profile-sftp-button:disabled {
             opacity: 0.35;
@@ -619,6 +632,15 @@ fn install_app_css() {
             min-height: 32px;
             padding: 4px;
             border-radius: 6px;
+            border-color: transparent;
+            background: transparent;
+            background-color: transparent;
+            background-image: none;
+            box-shadow: none;
+        }
+        .sftp-toolbar-button:hover {
+            background-color: #203247;
+            border-color: #34506c;
         }
         .sftp-header-row {
             padding: 4px 0;
@@ -657,6 +679,34 @@ fn install_app_css() {
         }
         .toolbar-button {
             min-width: 68px;
+        }
+        .toolbar-icon-button,
+        .toolbar-icon-button:hover,
+        .toolbar-icon-button:active,
+        .toolbar-icon-button:checked {
+            min-width: 36px;
+            min-height: 34px;
+            margin: 0;
+            padding: 0;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            background: transparent;
+            background-color: transparent;
+            background-image: none;
+            box-shadow: none;
+        }
+        .toolbar-icon-button image {
+            margin: 0;
+            padding: 0;
+        }
+        .toolbar-icon-button:hover {
+            background-color: #172330;
+            border-color: #263545;
+        }
+        .toolbar-icon-button:active,
+        .toolbar-icon-button:checked {
+            background-color: #203247;
+            border-color: #34506c;
         }
         headerbar windowcontrols,
         headerbar windowcontrols box,
@@ -1268,6 +1318,17 @@ fn build_sidebar_nav_button(icon_name: &str, tooltip: &str) -> Button {
     button.set_tooltip_text(Some(tooltip));
     button.set_has_frame(false);
     button.add_css_class("sidebar-nav-button");
+    button
+}
+
+fn build_header_icon_button(icon_name: &str, tooltip: &str) -> Button {
+    let button = Button::new();
+    let image = Image::from_icon_name(icon_name);
+    image.set_pixel_size(16);
+    button.set_child(Some(&image));
+    button.set_tooltip_text(Some(tooltip));
+    button.set_has_frame(false);
+    button.add_css_class("toolbar-icon-button");
     button
 }
 
@@ -3141,14 +3202,15 @@ fn language_from_combo_id(value: Option<String>) -> AppLanguage {
 
 fn apply_language_to_main_ui(state: &AppState) {
     let language = state.app_settings.borrow().language.clone();
-    state
-        .chrome
-        .new_session_button
-        .set_label(tr(&language, "新建", "New"));
+    state.chrome.new_session_button.set_tooltip_text(Some(tr(
+        &language,
+        "新建会话",
+        "New session",
+    )));
     state
         .chrome
         .settings_button
-        .set_label(tr(&language, "设置", "Settings"));
+        .set_tooltip_text(Some(tr(&language, "设置", "Settings")));
     state
         .chrome
         .sidebar_title

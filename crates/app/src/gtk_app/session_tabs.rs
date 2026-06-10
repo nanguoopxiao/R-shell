@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) const SESSION_TAB_MAX_WIDTH: i32 = 220;
 pub(super) const SESSION_TAB_MIN_WIDTH: i32 = 184;
-pub(super) const SESSION_TAB_CLOSE_WIDTH: i32 = 22;
+pub(super) const SESSION_TAB_CLOSE_WIDTH: i32 = 24;
 pub(super) const SESSION_TAB_LABEL_MIN_WIDTH: i32 = 128;
 pub(super) const SESSION_TAB_INNER_CHROME_WIDTH: i32 = 28;
 pub(super) const SESSION_TAB_CONTROL_GAP: i32 = 8;
@@ -157,6 +157,7 @@ pub(super) fn sync_session_tab_strip(state: &AppState, active_page: Option<&Widg
     let target_button_width = session_tab_button_width(target_tab_width);
     let target_label_chars = session_tab_label_max_chars(target_button_width);
     let compact_tabs = session_tab_is_compact(target_tab_width);
+    let language = state.app_settings.borrow().language.clone();
 
     while let Some(child) = state.session_tab_strip.tabs_box.first_child() {
         state.session_tab_strip.tabs_box.remove(&child);
@@ -213,12 +214,16 @@ pub(super) fn sync_session_tab_strip(state: &AppState, active_page: Option<&Widg
             }
         });
 
-        let close_button = Button::with_label("×");
+        let close_button = Button::new();
         close_button.set_has_frame(false);
         close_button.set_hexpand(false);
         close_button.set_focusable(false);
+        close_button.set_tooltip_text(Some(tr(&language, "关闭标签页", "Close tab")));
         close_button.add_css_class("tab-close-button");
         close_button.set_size_request(SESSION_TAB_CLOSE_WIDTH, -1);
+        let close_icon = Image::from_icon_name("window-close-symbolic");
+        close_icon.set_pixel_size(13);
+        close_button.set_child(Some(&close_icon));
         let notebook_for_close = state.notebook.clone();
         let page_for_close = page.clone();
         close_button.connect_clicked(move |_| {
@@ -453,10 +458,13 @@ pub(super) fn make_tab_label(
 ) -> GtkBox {
     let hbox = GtkBox::new(Orientation::Horizontal, 4);
     let lbl = Label::new(Some(title));
-    let close_btn = Button::with_label("×");
+    let close_btn = Button::new();
     close_btn.set_has_frame(false);
     close_btn.add_css_class("flat");
     close_btn.add_css_class("tab-close-button");
+    let close_icon = Image::from_icon_name("window-close-symbolic");
+    close_icon.set_pixel_size(13);
+    close_btn.set_child(Some(&close_icon));
     hbox.append(&lbl);
     hbox.append(&close_btn);
 
