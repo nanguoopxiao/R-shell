@@ -36,8 +36,9 @@ use shell_protocol::{
 use shell_renderer::gtk::{GtkTerminalView, TerminalAppearance, adjusted_font_description_size};
 use shell_storage::{
     AppLanguage, AppSettings, BuiltinToolsPathPriority, BuiltinToolsSettings,
-    OpensshCompatibilitySettings, ProfileStore, ProfilesDocument, RendererBackend, delete_secret,
-    load_secret, store_secret,
+    OpensshCompatibilitySettings, ProfileStore, ProfilesDocument, RendererBackend,
+    app_password_configured, delete_secret, load_secret, set_app_password, store_secret,
+    verify_app_password,
 };
 use shell_terminal::TerminalBuffer;
 
@@ -400,6 +401,7 @@ fn build_ui(app: &Application) {
 
     window.present();
     trace_startup_memory("after present");
+    schedule_app_password_setup(&state);
     schedule_session_tab_width_cap_capture(&state);
     schedule_debug_local_terminal_autostart(&state);
     schedule_debug_tab_autoclose(&state);
@@ -641,6 +643,24 @@ fn install_app_css() {
         .sftp-toolbar-button:hover {
             background-color: #203247;
             border-color: #34506c;
+        }
+        .password-reveal-button,
+        .password-reveal-button:hover,
+        .password-reveal-button:active,
+        .password-reveal-button:checked {
+            min-width: 36px;
+            min-height: 36px;
+            padding: 0;
+            border-radius: 6px;
+            border-color: #303842;
+            background: #11161b;
+            background-color: #11161b;
+            background-image: none;
+            box-shadow: none;
+        }
+        .password-reveal-button:hover {
+            background-color: #17212b;
+            border-color: #405267;
         }
         .sftp-header-row {
             padding: 4px 0;
@@ -2153,6 +2173,7 @@ enum SshDisconnectedInputAction {
 struct PasswordFields {
     username: Entry,
     password: Entry,
+    reveal_button: Button,
     remember: CheckButton,
 }
 
@@ -2204,6 +2225,7 @@ struct NewSessionForm {
     ftp_port: Entry,
     ftp_username: Entry,
     ftp_password: Entry,
+    ftp_password_reveal: Button,
     ftp_remember: CheckButton,
     telnet_name: Entry,
     telnet_host: Entry,
@@ -2489,6 +2511,7 @@ fn show_new_session_window(state: &AppState) {
     root.append(&subtitle);
 
     let (form_widget, form) = build_new_session_form(&language);
+    connect_new_session_password_reveals(&form);
     root.append(&form_widget);
 
     let actions = GtkBox::new(Orientation::Horizontal, 6);
@@ -2571,6 +2594,7 @@ fn show_edit_session_window(state: &AppState, index: usize) {
 
     let (form_widget, form) = build_new_session_form(&language);
     populate_form_from_profile(&form, &existing);
+    connect_edit_session_password_reveals(state, &form, &existing, &language);
     root.append(&form_widget);
 
     let actions = GtkBox::new(Orientation::Horizontal, 6);
@@ -2600,6 +2624,339 @@ fn show_edit_session_window(state: &AppState, index: usize) {
     let win_for_cancel = win.clone();
     cancel_btn.connect_clicked(move |_| {
         win_for_cancel.close();
+    });
+
+    win.present();
+}
+
+fn connect_new_session_password_reveals(form: &NewSessionForm) {
+    connect_plain_password_reveal(
+        &form.ssh_auth.password.password,
+        &form.ssh_auth.password.reveal_button,
+    );
+    connect_plain_password_reveal(
+        &form.sftp_auth.password.password,
+        &form.sftp_auth.password.reveal_button,
+    );
+    connect_plain_password_reveal(&form.ftp_password, &form.ftp_password_reveal);
+}
+
+fn connect_edit_session_password_reveals(
+    state: &AppState,
+    form: &NewSessionForm,
+    existing: &ConnectionProfile,
+    language: &AppLanguage,
+) {
+    let saved_password_ref = saved_password_reference(existing);
+
+    if matches!(existing.protocol, ProtocolKind::Ssh) {
+        if let Some(password_ref) = saved_password_ref.clone() {
+            connect_saved_password_reveal(
+                state,
+                &form.ssh_auth.password.password,
+                &form.ssh_auth.password.reveal_button,
+                password_ref,
+                language,
+            );
+        } else {
+            connect_plain_password_reveal(
+                &form.ssh_auth.password.password,
+                &form.ssh_auth.password.reveal_button,
+            );
+        }
+    } else {
+        connect_plain_password_reveal(
+            &form.ssh_auth.password.password,
+            &form.ssh_auth.password.reveal_button,
+        );
+    }
+
+    if matches!(existing.protocol, ProtocolKind::Sftp) {
+        if let Some(password_ref) = saved_password_ref.clone() {
+            connect_saved_password_reveal(
+                state,
+                &form.sftp_auth.password.password,
+                &form.sftp_auth.password.reveal_button,
+                password_ref,
+                language,
+            );
+        } else {
+            connect_plain_password_reveal(
+                &form.sftp_auth.password.password,
+                &form.sftp_auth.password.reveal_button,
+            );
+        }
+    } else {
+        connect_plain_password_reveal(
+            &form.sftp_auth.password.password,
+            &form.sftp_auth.password.reveal_button,
+        );
+    }
+
+    if matches!(existing.protocol, ProtocolKind::Ftp) {
+        if let Some(password_ref) = saved_password_ref {
+            connect_saved_password_reveal(
+                state,
+                &form.ftp_password,
+                &form.ftp_password_reveal,
+                password_ref,
+                language,
+            );
+        } else {
+            connect_plain_password_reveal(&form.ftp_password, &form.ftp_password_reveal);
+        }
+    } else {
+        connect_plain_password_reveal(&form.ftp_password, &form.ftp_password_reveal);
+    }
+}
+
+fn saved_password_reference(profile: &ConnectionProfile) -> Option<CredentialsRef> {
+    let AuthConfig::Password {
+        password_ref: CredentialsRef::SystemKeychain { .. },
+        ..
+    } = &profile.auth
+    else {
+        return None;
+    };
+    if let AuthConfig::Password { password_ref, .. } = &profile.auth {
+        Some(password_ref.clone())
+    } else {
+        None
+    }
+}
+
+fn connect_saved_password_reveal(
+    state: &AppState,
+    entry: &Entry,
+    button: &Button,
+    password_ref: CredentialsRef,
+    language: &AppLanguage,
+) {
+    let state_for_click = state.clone();
+    let entry_for_click = entry.clone();
+    let button_for_click = button.clone();
+    let language_for_click = language.clone();
+    let revealed = Rc::new(Cell::new(false));
+    button.connect_clicked(move |_| {
+        if revealed.get() {
+            set_password_entry_revealed(&entry_for_click, &button_for_click, false);
+            revealed.set(false);
+            return;
+        }
+
+        let state_for_verify = state_for_click.clone();
+        let entry_for_verified = entry_for_click.clone();
+        let button_for_verified = button_for_click.clone();
+        let password_ref_for_verified = password_ref.clone();
+        let language_for_verify = language_for_click.clone();
+        let revealed_for_verify = Rc::clone(&revealed);
+        show_app_password_verify_window(&state_for_click.window, &language_for_click, move || {
+            let password_ref_for_load = password_ref_for_verified.clone();
+            let entry_for_result = entry_for_verified.clone();
+            let button_for_result = button_for_verified.clone();
+            let language_for_result = language_for_verify.clone();
+            let revealed_for_result = Rc::clone(&revealed_for_verify);
+            run_background_task(
+                &state_for_verify,
+                Some(tr(
+                    &language_for_result,
+                    "正在读取已保存密码...",
+                    "Loading saved password...",
+                )),
+                move || {
+                    load_secret(&password_ref_for_load)?
+                        .ok_or_else(|| anyhow::anyhow!("Saved password was not found"))
+                },
+                move |state, result| match result {
+                    Ok(password) => {
+                        entry_for_result.set_text(&password);
+                        set_password_entry_revealed(&entry_for_result, &button_for_result, true);
+                        revealed_for_result.set(true);
+                        state.status.set_text(tr(
+                            &language_for_result,
+                            "已显示保存的密码",
+                            "Saved password is visible",
+                        ));
+                    }
+                    Err(err) => state.status.set_text(&err.to_string()),
+                },
+            );
+        });
+    });
+}
+
+fn schedule_app_password_setup(state: &AppState) {
+    let state_for_setup = state.clone();
+    glib::idle_add_local_once(move || match app_password_configured() {
+        Ok(true) => {}
+        Ok(false) => show_app_password_setup_window(&state_for_setup),
+        Err(err) => state_for_setup
+            .status
+            .set_text(&format!("Failed to inspect application password: {err}")),
+    });
+}
+
+fn show_app_password_setup_window(state: &AppState) {
+    let language = state.app_settings.borrow().language.clone();
+    let win = build_modal_window(
+        &state.window,
+        tr(&language, "设置应用密码", "Set Application Password"),
+        420,
+        0,
+    );
+
+    let root = GtkBox::new(Orientation::Vertical, 10);
+    root.add_css_class("dialog-content");
+
+    let title = Label::new(Some(tr(
+        &language,
+        "设置应用密码",
+        "Set Application Password",
+    )));
+    title.set_xalign(0.0);
+    title.add_css_class("dialog-title");
+
+    let subtitle = Label::new(Some(tr(
+        &language,
+        "应用密码用于查看已保存会话密码。请妥善保存；之后查看密码时需要验证它。",
+        "This password is required before showing saved session passwords. Keep it safe.",
+    )));
+    subtitle.set_xalign(0.0);
+    subtitle.set_wrap(true);
+    subtitle.add_css_class("dialog-subtitle");
+
+    let password = new_password_entry(tr(&language, "应用密码", "Application password"));
+    let confirm = new_password_entry(tr(&language, "再次输入应用密码", "Confirm password"));
+    let error_label = Label::new(None);
+    error_label.set_xalign(0.0);
+    error_label.add_css_class("dim-label");
+
+    let actions = GtkBox::new(Orientation::Horizontal, 6);
+    actions.set_halign(gtk4::Align::End);
+    actions.add_css_class("dialog-actions");
+    let save_btn = Button::with_label(tr(&language, "保存", "Save"));
+    actions.append(&save_btn);
+
+    root.append(&title);
+    root.append(&subtitle);
+    root.append(&password);
+    root.append(&confirm);
+    root.append(&error_label);
+    root.append(&actions);
+    win.set_child(Some(&root));
+
+    let state_for_save = state.clone();
+    let win_for_save = win.clone();
+    let language_for_save = language.clone();
+    save_btn.connect_clicked(move |_| {
+        let password_value = password.text().to_string();
+        let confirm_value = confirm.text().to_string();
+        if password_value.chars().count() < 6 {
+            error_label.set_text(tr(
+                &language_for_save,
+                "应用密码至少需要 6 个字符。",
+                "Use at least 6 characters.",
+            ));
+            return;
+        }
+        if password_value != confirm_value {
+            error_label.set_text(tr(
+                &language_for_save,
+                "两次输入的密码不一致。",
+                "Passwords do not match.",
+            ));
+            return;
+        }
+
+        match set_app_password(&password_value) {
+            Ok(()) => {
+                state_for_save.status.set_text(tr(
+                    &language_for_save,
+                    "应用密码已设置",
+                    "Application password was set",
+                ));
+                win_for_save.close();
+            }
+            Err(err) => error_label.set_text(&err.to_string()),
+        }
+    });
+
+    win.present();
+}
+
+fn show_app_password_verify_window(
+    parent: &ApplicationWindow,
+    language: &AppLanguage,
+    on_verified: impl Fn() + 'static,
+) {
+    let win = build_modal_window(
+        parent,
+        tr(language, "验证应用密码", "Verify Application Password"),
+        360,
+        0,
+    );
+
+    let root = GtkBox::new(Orientation::Vertical, 10);
+    root.add_css_class("dialog-content");
+
+    let title = Label::new(Some(tr(
+        language,
+        "验证应用密码",
+        "Verify Application Password",
+    )));
+    title.set_xalign(0.0);
+    title.add_css_class("dialog-title");
+
+    let subtitle = Label::new(Some(tr(
+        language,
+        "输入应用密码后才会显示已保存的会话密码。",
+        "Enter the application password to show the saved session password.",
+    )));
+    subtitle.set_xalign(0.0);
+    subtitle.set_wrap(true);
+    subtitle.add_css_class("dialog-subtitle");
+
+    let password = new_password_entry(tr(language, "应用密码", "Application password"));
+    let error_label = Label::new(None);
+    error_label.set_xalign(0.0);
+    error_label.add_css_class("dim-label");
+
+    let actions = GtkBox::new(Orientation::Horizontal, 6);
+    actions.set_halign(gtk4::Align::End);
+    actions.add_css_class("dialog-actions");
+    let cancel_btn = Button::with_label(tr(language, "取消", "Cancel"));
+    let verify_btn = Button::with_label(tr(language, "验证", "Verify"));
+    actions.append(&cancel_btn);
+    actions.append(&verify_btn);
+
+    root.append(&title);
+    root.append(&subtitle);
+    root.append(&password);
+    root.append(&error_label);
+    root.append(&actions);
+    win.set_child(Some(&root));
+
+    let win_for_cancel = win.clone();
+    cancel_btn.connect_clicked(move |_| {
+        win_for_cancel.close();
+    });
+
+    let win_for_verify = win.clone();
+    let language_for_verify = language.clone();
+    verify_btn.connect_clicked(move |_| {
+        let value = password.text().to_string();
+        match verify_app_password(&value) {
+            Ok(true) => {
+                win_for_verify.close();
+                on_verified();
+            }
+            Ok(false) => error_label.set_text(tr(
+                &language_for_verify,
+                "应用密码不正确。",
+                "Application password is incorrect.",
+            )),
+            Err(err) => error_label.set_text(&err.to_string()),
+        }
     });
 
     win.present();
@@ -3996,13 +4353,14 @@ fn build_new_session_form(language: &AppLanguage) -> (GtkBox, NewSessionForm) {
     let ftp_port = new_entry("21", Some("21"));
     let ftp_username = new_entry("root", None);
     let ftp_password = new_password_entry(tr(language, "密码", "Password"));
+    let (ftp_password_row, ftp_password_reveal) = password_entry_with_reveal(&ftp_password);
     let ftp_remember = CheckButton::with_label(tr(
         language,
         "在本机安全保存密码",
         "Save password securely on this PC",
     ));
     let ftp_password_box = GtkBox::new(Orientation::Vertical, 6);
-    ftp_password_box.append(&ftp_password);
+    ftp_password_box.append(&ftp_password_row);
     ftp_password_box.append(&ftp_remember);
     let ftp_grid = form_grid();
     add_form_row(&ftp_grid, 0, tr(language, "名称", "Name"), &ftp_name);
@@ -4067,6 +4425,7 @@ fn build_new_session_form(language: &AppLanguage) -> (GtkBox, NewSessionForm) {
             ftp_port,
             ftp_username,
             ftp_password,
+            ftp_password_reveal,
             ftp_remember,
             telnet_name,
             telnet_host,
@@ -4119,11 +4478,17 @@ fn build_auth_fields(allow_keyboard: bool, language: &AppLanguage) -> AuthFields
     let password = PasswordFields {
         username: new_entry("root", None),
         password: new_password_entry(tr(language, "密码", "Password")),
+        reveal_button: Button::new(),
         remember: CheckButton::with_label(tr(
             language,
             "在本机安全保存密码",
             "Save password securely on this PC",
         )),
+    };
+    let (password_row, password_reveal) = password_entry_with_reveal(&password.password);
+    let password = PasswordFields {
+        reveal_button: password_reveal,
+        ..password
     };
     let password_grid = form_grid();
     add_form_row(
@@ -4136,7 +4501,7 @@ fn build_auth_fields(allow_keyboard: bool, language: &AppLanguage) -> AuthFields
         &password_grid,
         1,
         tr(language, "密码", "Password"),
-        &password.password,
+        &password_row,
     );
     password_grid.attach(&password.remember, 1, 2, 1, 1);
     stack.add_titled(
@@ -4233,6 +4598,54 @@ fn new_password_entry(placeholder: &str) -> Entry {
     let entry = new_entry(placeholder, None);
     entry.set_visibility(false);
     entry
+}
+
+fn password_entry_with_reveal(entry: &Entry) -> (GtkBox, Button) {
+    let row = GtkBox::new(Orientation::Horizontal, 6);
+    row.set_hexpand(true);
+
+    let reveal_button = Button::new();
+    reveal_button.set_has_frame(false);
+    reveal_button.add_css_class("password-reveal-button");
+    set_password_reveal_button_state(&reveal_button, false);
+
+    row.append(entry);
+    row.append(&reveal_button);
+
+    (row, reveal_button)
+}
+
+fn set_password_reveal_button_state(button: &Button, visible: bool) {
+    let icon_name = if visible {
+        "view-conceal-symbolic"
+    } else {
+        "view-reveal-symbolic"
+    };
+    let tooltip = if visible {
+        "Hide password"
+    } else {
+        "Show password"
+    };
+    let icon = Image::from_icon_name(icon_name);
+    icon.set_pixel_size(16);
+    button.set_child(Some(&icon));
+    button.set_tooltip_text(Some(tooltip));
+}
+
+fn set_password_entry_revealed(entry: &Entry, button: &Button, visible: bool) {
+    entry.set_visibility(visible);
+    set_password_reveal_button_state(button, visible);
+}
+
+fn connect_plain_password_reveal(entry: &Entry, button: &Button) {
+    let entry = entry.clone();
+    let button_for_click = button.clone();
+    let revealed = Rc::new(Cell::new(false));
+    button.connect_clicked(move |_| {
+        let next_visible = !revealed.get();
+        set_password_entry_revealed(&entry, &button_for_click, next_visible);
+        revealed.set(next_visible);
+    });
 }
 
 fn default_profile_name(entry: &Entry, fallback: &str) -> String {

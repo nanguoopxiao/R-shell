@@ -16,6 +16,8 @@ use shell_core::{AuthConfig, ConnectionProfile, CredentialsRef, Result, ShellErr
 const EXPORT_BUNDLE_VERSION: u32 = 1;
 const SECRETS_FILE_NAME: &str = "secrets.json";
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const APP_PASSWORD_SERVICE: &str = "dev.shell.app";
+const APP_PASSWORD_ACCOUNT: &str = "master-password";
 
 #[cfg(windows)]
 const SECRET_FORMAT: &str = "windows-dpapi-v1";
@@ -506,6 +508,49 @@ pub fn delete_secret(reference: &CredentialsRef) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn app_password_configured() -> Result<bool> {
+    load_secret(&app_password_reference()).map(|password| password.is_some())
+}
+
+pub fn set_app_password(password: &str) -> Result<()> {
+    if password.is_empty() {
+        return Err(ShellError::InvalidConfig(
+            "Application password must not be empty".to_string(),
+        ));
+    }
+
+    store_secret(APP_PASSWORD_SERVICE, APP_PASSWORD_ACCOUNT, password).map(|_| ())
+}
+
+pub fn verify_app_password(password: &str) -> Result<bool> {
+    let Some(stored_password) = load_secret(&app_password_reference())? else {
+        return Ok(false);
+    };
+
+    Ok(constant_time_eq(
+        stored_password.as_bytes(),
+        password.as_bytes(),
+    ))
+}
+
+fn app_password_reference() -> CredentialsRef {
+    CredentialsRef::SystemKeychain {
+        service: APP_PASSWORD_SERVICE.to_string(),
+        account: APP_PASSWORD_ACCOUNT.to_string(),
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut diff = left.len() ^ right.len();
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+    diff == 0
 }
 
 fn save_export_bundle(path: &Path, bundle: &ProfilesExportBundle) -> Result<()> {
