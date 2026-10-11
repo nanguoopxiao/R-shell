@@ -195,7 +195,7 @@ fn set_env_csv_without(name: &str, removed_values: &[&str]) {
 fn env_csv_values(name: &str) -> Vec<String> {
     std::env::var(name)
         .unwrap_or_default()
-        .split(|ch| matches!(ch, ':' | ';' | ',' | ' ' | '\t'))
+        .split([':', ';', ',', ' ', '\t'])
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)

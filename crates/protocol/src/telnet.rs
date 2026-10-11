@@ -1,9 +1,15 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread::{self, JoinHandle};
 
 use shell_core::{ProtocolEvent, Result, ShellError, TerminalSize};
+
+use crate::output::{OutputSender, output_channel};
 
 const IAC: u8 = 255;
 const DONT: u8 = 254;
@@ -55,6 +61,7 @@ impl TelnetConfig {
 pub struct TelnetConnection {
     stream: Arc<Mutex<TcpStream>>,
     reader_thread: Option<JoinHandle<()>>,
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl TelnetConnection {
@@ -79,7 +86,8 @@ impl TelnetConnection {
             .map_err(|err| ShellError::Protocol(err.to_string()))?;
         let stream = Arc::new(Mutex::new(stream));
         let writer = Arc::clone(&stream);
-        let (sender, receiver) = mpsc::channel();
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = output_channel(Arc::clone(&shutdown_requested));
 
         let reader_thread = thread::Builder::new()
             .name("telnet-reader".to_string())
@@ -90,6 +98,7 @@ impl TelnetConnection {
             Self {
                 stream,
                 reader_thread: Some(reader_thread),
+                shutdown_requested,
             },
             receiver,
         ))
@@ -113,6 +122,7 @@ impl TelnetConnection {
     }
 
     pub fn shutdown(&self) -> Result<()> {
+        self.shutdown_requested.store(true, Ordering::Relaxed);
         self.stream
             .lock()
             .map_err(|_| ShellError::Protocol("Telnet stream lock poisoned".to_string()))?
@@ -133,7 +143,7 @@ impl Drop for TelnetConnection {
 fn read_loop(
     mut reader: TcpStream,
     writer: Arc<Mutex<TcpStream>>,
-    sender: mpsc::Sender<ProtocolEvent>,
+    sender: OutputSender,
     size: TerminalSize,
 ) {
     let mut parser = TelnetParser::new(size);

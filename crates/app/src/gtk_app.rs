@@ -43,12 +43,18 @@ use shell_storage::{
 use shell_terminal::TerminalBuffer;
 
 mod formatting;
+mod profiles_ui;
 mod session_tabs;
 mod sftp_ui;
+mod workbench;
+#[cfg(test)]
+mod workbench_tests;
 
 use formatting::*;
+use profiles_ui::*;
 use session_tabs::*;
 use sftp_ui::*;
+use workbench::*;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 // 默认历史行数保持保守：即使命令输出数百万字符，终端输出内存也必须保持有界。
@@ -56,7 +62,6 @@ const DEFAULT_SCROLLBACK_LINES: usize = 2_000;
 const LOCAL_TERMINALS_CACHE_VERSION: u32 = 2;
 // 会话标签允许缩小，但不能低于可读宽度。标签栏溢出后优先使用横向滚动，而不是
 // 隐藏 IP/协议信息或让关闭按钮发生意外位移。
-const SIDEBAR_STACK_TRANSITION_MS: u32 = 180;
 const PAGE_SWITCH_TRANSITION_MS: u64 = 160;
 const WORKSPACE_STACK_TRANSITION_MS: u32 = 180;
 const WORKSPACE_PAGE_EMPTY: &str = "empty";
@@ -163,74 +168,8 @@ fn build_ui(app: &Application) {
     profiles_list.add_css_class("profiles-list");
     let session_tab_strip = build_session_tab_strip(&initial_language);
 
-    let header = HeaderBar::builder()
-        .title_widget(&Label::new(Some("R-shell")))
-        .build();
-    header.add_css_class("app-header");
-    let new_session_btn = build_header_icon_button(
-        "list-add-symbolic",
-        tr(&initial_language, "新建会话", "New session"),
-    );
-    let settings_btn = build_header_icon_button(
-        "preferences-system-symbolic",
-        tr(&initial_language, "设置", "Settings"),
-    );
-    header.pack_start(&new_session_btn);
-    header.pack_end(&settings_btn);
-
-    let sidebar = GtkBox::new(Orientation::Horizontal, 10);
-    sidebar.set_hexpand(false);
-    sidebar.set_margin_top(10);
-    sidebar.set_margin_bottom(10);
-    sidebar.set_margin_start(10);
-    sidebar.set_margin_end(10);
-    sidebar.set_size_request(300, -1);
-    sidebar.add_css_class("session-sidebar");
-
-    let nav_rail = GtkBox::new(Orientation::Vertical, 8);
-    nav_rail.add_css_class("sidebar-nav");
-    let sessions_nav_btn = build_sidebar_nav_button(
-        "utilities-terminal-symbolic",
-        tr(&initial_language, "已保存会话", "Sessions"),
-    );
-    let sftp_nav_btn = build_sidebar_nav_button(
-        "folder-symbolic",
-        tr(&initial_language, "SFTP 浏览器", "SFTP browser"),
-    );
-    nav_rail.append(&sessions_nav_btn);
-    nav_rail.append(&sftp_nav_btn);
-
-    let sessions_panel = GtkBox::new(Orientation::Vertical, 8);
-    sessions_panel.set_size_request(0, -1);
-    sessions_panel.add_css_class("sidebar-panel");
-    let sidebar_title = Label::new(Some(tr(&initial_language, "已保存会话", "Saved Sessions")));
-    sidebar_title.set_xalign(0.0);
-    sidebar_title.add_css_class("sidebar-panel-title");
-    let list_scroll = ScrolledWindow::builder()
-        .hexpand(true)
-        .vexpand(true)
-        .child(&profiles_list)
-        .build();
-    list_scroll.add_css_class("sidebar-scroll");
-    sessions_panel.append(&sidebar_title);
-    sessions_panel.append(&list_scroll);
-
-    let sftp_sidebar = build_sftp_sidebar(true, &initial_language);
-    trace_startup_memory("after sftp sidebar");
-    let sidebar_stack = Stack::new();
-    sidebar_stack.set_hexpand(true);
-    sidebar_stack.set_size_request(0, -1);
-    sidebar_stack.set_vexpand(true);
-    sidebar_stack.set_hhomogeneous(false);
-    sidebar_stack.set_vhomogeneous(false);
-    sidebar_stack.set_transition_type(StackTransitionType::Crossfade);
-    sidebar_stack.set_transition_duration(SIDEBAR_STACK_TRANSITION_MS);
-    sidebar_stack.add_titled(&sessions_panel, Some("sessions"), "Sessions");
-    sidebar_stack.add_titled(&sftp_sidebar.container, Some("sftp"), "SFTP");
-    sidebar_stack.set_visible_child_name("sessions");
-
-    sidebar.append(&nav_rail);
-    sidebar.append(&sidebar_stack);
+    let sftp_sidebar = build_sftp_sidebar(false, &initial_language);
+    trace_startup_memory("after file panel");
 
     let (empty_state, empty_open_local_btn, empty_new_session_btn) =
         build_empty_workspace(&initial_language);
@@ -245,40 +184,28 @@ fn build_ui(app: &Application) {
     workspace_stack.add_named(&notebook, Some(WORKSPACE_PAGE_SESSIONS));
     workspace_stack.set_visible_child_name(WORKSPACE_PAGE_EMPTY);
 
-    let status_bar = GtkBox::new(Orientation::Horizontal, 12);
-    status_bar.add_css_class("app-status-bar");
-    status_bar.append(&host_info);
-    status_bar.append(&status);
-
-    let content = GtkBox::new(Orientation::Vertical, 0);
-    content.add_css_class("content-panel");
-    content.set_hexpand(true);
-    content.set_vexpand(true);
-    content.set_size_request(0, -1);
-    content.append(&session_tab_strip.container);
-    content.append(&workspace_stack);
-    content.append(&status_bar);
-
-    let root = Paned::new(Orientation::Horizontal);
-    root.add_css_class("app-root");
-    root.set_start_child(Some(&sidebar));
-    root.set_end_child(Some(&content));
-    root.set_position(300);
-    root.set_wide_handle(false);
-    root.set_resize_start_child(false);
-    root.set_shrink_start_child(true);
-    root.set_resize_end_child(true);
-    root.set_shrink_end_child(true);
+    let chrome = Workbench::new(
+        &initial_language,
+        WorkbenchParts {
+            tabs: &session_tab_strip,
+            profiles: &profiles_list,
+            files: &sftp_sidebar,
+            workspace: &workspace_stack,
+            status: &status,
+            host_info: &host_info,
+        },
+        app_settings.borrow().workspace_layout.clone(),
+    );
 
     let window = ApplicationWindow::builder()
         .application(app)
         .title("R-shell")
-        .default_width(1360)
-        .default_height(800)
-        .child(&root)
+        .default_width(1280)
+        .default_height(780)
+        .child(&chrome.root)
         .build();
     window.add_css_class("app-window");
-    window.set_titlebar(Some(&header));
+    window.set_titlebar(Some(&chrome.header));
     trace_startup_memory("after window build");
 
     let state = AppState {
@@ -298,23 +225,16 @@ fn build_ui(app: &Application) {
         page_shutdowns: Rc::new(RefCell::new(Vec::new())),
         connections,
         host_stats_poller: Rc::new(RefCell::new(None)),
-        window_size_cap: Rc::new(RefCell::new(None)),
         active_popover: Rc::new(RefCell::new(None)),
         local_terminals,
-        chrome: AppChrome {
-            new_session_button: new_session_btn.clone(),
-            settings_button: settings_btn.clone(),
-            sidebar_title: sidebar_title.clone(),
-        },
+        chrome: chrome.clone(),
         session_tab_strip: session_tab_strip.clone(),
-        sidebar_nav: SidebarNav {
-            stack: sidebar_stack.clone(),
-            sessions_button: sessions_nav_btn.clone(),
-            sftp_button: sftp_nav_btn.clone(),
-        },
         sftp_sidebar: sftp_sidebar.clone(),
     };
     refresh_profile_list_for_state(&state);
+    let new_session_btn = state.chrome.new_session_button.clone();
+    let settings_btn = state.chrome.settings_button.clone();
+    connect_workbench_actions(&state);
 
     let state_for_new = state.clone();
     new_session_btn.connect_clicked(move |_| {
@@ -347,21 +267,11 @@ fn build_ui(app: &Application) {
         open_settings_tab(&state_for_settings);
     });
 
-    let state_for_sessions_nav = state.clone();
-    sessions_nav_btn.connect_clicked(move |_| {
-        show_sidebar_section(&state_for_sessions_nav, "sessions");
-    });
-
-    let state_for_sftp_nav = state.clone();
-    sftp_nav_btn.connect_clicked(move |_| {
-        show_sidebar_section(&state_for_sftp_nav, "sftp");
-        activate_sftp_sidebar_for_current_session(&state_for_sftp_nav);
-    });
-
     let state_for_switch_page = state.clone();
     notebook.connect_switch_page(move |_, page, _| {
         animate_notebook_switch(&state_for_switch_page.notebook);
         let context = page_context_for_widget(&state_for_switch_page, page);
+        update_workbench_context(&state_for_switch_page, Some(page));
         sync_active_page_state(&state_for_switch_page, context);
         sync_session_tab_strip(&state_for_switch_page, Some(page));
         schedule_widget_focus(page);
@@ -377,32 +287,26 @@ fn build_ui(app: &Application) {
         sync_session_tab_strip(&state_for_page_removed, None);
         sync_workspace_state(&state_for_page_removed);
         let context = current_page_context(&state_for_page_removed);
+        update_workbench_context(&state_for_page_removed, None);
         sync_active_page_state(&state_for_page_removed, context);
     });
 
     let state_for_activate = state.clone();
     profiles_list.connect_row_activated(move |_, row| {
-        let index = row.index() as usize;
-        if let Some(profile) = state_for_activate
-            .profiles_doc
-            .borrow()
-            .profiles
-            .get(index)
-            .cloned()
-        {
+        let profile = profile_for_row(&state_for_activate.profiles_doc.borrow(), row);
+        if let Some(profile) = profile {
             connect_saved_profile(&state_for_activate, profile);
         }
     });
     connect_profiles_context_menu(&state);
     connect_sftp_sidebar_actions(&state);
-    show_sidebar_section(&state, "sessions");
+    update_workbench_context(&state, None);
     sync_session_tab_strip(&state, None);
     sync_workspace_state(&state);
 
     window.present();
     trace_startup_memory("after present");
     schedule_app_password_setup(&state);
-    schedule_session_tab_width_cap_capture(&state);
     schedule_debug_local_terminal_autostart(&state);
     schedule_debug_tab_autoclose(&state);
     schedule_startup_memory_trim();
@@ -472,29 +376,6 @@ fn schedule_startup_memory_trim() {
     }
 }
 
-fn schedule_session_tab_width_cap_capture(state: &AppState) {
-    let state_for_capture = state.clone();
-    glib::idle_add_local_once(move || {
-        capture_session_tab_width_cap(&state_for_capture);
-        capture_window_size_cap(&state_for_capture);
-    });
-}
-
-fn capture_session_tab_width_cap(state: &AppState) {
-    let width = state.session_tab_strip.container.allocated_width();
-    if width > 0 {
-        *state.session_tab_strip.width_cap.borrow_mut() = Some(width);
-    }
-}
-
-fn capture_window_size_cap(state: &AppState) {
-    let width = state.window.allocated_width();
-    let height = state.window.allocated_height();
-    if width > 0 && height > 0 {
-        *state.window_size_cap.borrow_mut() = Some((width, height));
-    }
-}
-
 #[cfg(not(windows))]
 fn schedule_startup_memory_trim() {}
 
@@ -513,784 +394,7 @@ fn install_app_css() {
         return;
     };
     let provider = CssProvider::new();
-    provider.load_from_data(
-        r#"
-        * {
-            color: #d7dce2;
-        }
-        button, combobox, combobox button, listbox row, entry, checkbutton {
-            outline: none;
-            outline-offset: 0;
-        }
-        button, entry, combobox button, listbox row, .session-tab-item, .sidebar-nav-button,
-        .toolbar-icon-button, .sftp-toolbar-button, .profile-actions-button, popover > contents,
-        .settings-page, .settings-card, .new-session-form, .dialog-content,
-        .protocol-page, notebook, notebook > stack, stack, .empty-workspace, .app-status-bar {
-            transition-property: background-color, border-color, color, opacity, box-shadow;
-            transition-duration: 180ms;
-            transition-timing-function: ease-out;
-        }
-        notebook.page-switching > stack {
-            opacity: 0.94;
-        }
-        window, window.background, .app-window, .app-root, .content-panel, .session-sidebar,
-        .sidebar-scroll, .sidebar-scroll viewport, .sidebar-scroll overshoot, .sidebar-scroll undershoot,
-        listbox, listbox.view, .profiles-list, .profiles-list viewport, .profiles-list.view,
-        scrolledwindow, scrolledwindow viewport, viewport, .app-status-bar,
-        notebook, notebook > stack, textview, textview text {
-            background: #0c1014;
-            background-color: #0c1014;
-            color: #d7dce2;
-        }
-        headerbar, .app-header, .app-header windowhandle {
-            background: #0d1218;
-            background-color: #0d1218;
-            color: #d7dce2;
-            border-bottom: 1px solid #242a30;
-        }
-        popover > contents, .app-menu-popover > contents {
-            background-color: #151b22;
-            color: #d7dce2;
-            border: 1px solid #33404d;
-            border-radius: 12px;
-            padding: 6px;
-            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
-        }
-        listbox row, listbox row box, listbox row label, .session-sidebar label, .content-panel label {
-            color: #d7dce2;
-            background-color: transparent;
-        }
-        button, menubutton > button, combobox button, combobox box button {
-            background: #1a222b;
-            background-color: #1a222b;
-            background-image: none;
-            color: #d7dce2;
-            border: 1px solid #303d49;
-            border-radius: 8px;
-            box-shadow: none;
-            padding: 5px 10px;
-        }
-        button:hover, menubutton > button:hover, combobox button:hover {
-            background: #24303b;
-            background-color: #24303b;
-            border-color: #415267;
-        }
-        button:active, button:checked, menubutton > button:active, combobox button:active {
-            background: #2d4052;
-            background-color: #2d4052;
-            border-color: #4d6680;
-        }
-        .profile-actions-button {
-            min-width: 150px;
-            padding: 8px 12px;
-            border-color: transparent;
-            background: transparent;
-            background-color: transparent;
-            border-radius: 8px;
-        }
-        .profile-actions-button:hover {
-            background: #24303b;
-            background-color: #24303b;
-            border-color: #33465a;
-        }
-        .context-menu-list {
-            padding: 0;
-            background: transparent;
-            background-color: transparent;
-        }
-        .context-menu-button,
-        .context-menu-button:hover,
-        .context-menu-button:active,
-        .context-menu-button:checked,
-        .context-menu-button:disabled {
-            margin: 0;
-            border-radius: 8px;
-            box-shadow: none;
-            background-image: none;
-        }
-        .context-menu-button:disabled {
-            opacity: 0.42;
-        }
-        .profile-sftp-button {
-            min-width: 34px;
-            min-height: 34px;
-            padding: 4px;
-            border-radius: 6px;
-            border-color: transparent;
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            box-shadow: none;
-        }
-        .profile-sftp-button:hover {
-            background-color: #203247;
-            border-color: #34506c;
-        }
-        .profile-sftp-button:disabled {
-            opacity: 0.35;
-        }
-        .sftp-toolbar-button {
-            min-width: 32px;
-            min-height: 32px;
-            padding: 4px;
-            border-radius: 6px;
-            border-color: transparent;
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            box-shadow: none;
-        }
-        .sftp-toolbar-button:hover {
-            background-color: #203247;
-            border-color: #34506c;
-        }
-        .password-reveal-button,
-        .password-reveal-button:hover,
-        .password-reveal-button:active,
-        .password-reveal-button:checked {
-            min-width: 36px;
-            min-height: 36px;
-            padding: 0;
-            border-radius: 6px;
-            border-color: #303842;
-            background: #11161b;
-            background-color: #11161b;
-            background-image: none;
-            box-shadow: none;
-        }
-        .password-reveal-button:hover {
-            background-color: #17212b;
-            border-color: #405267;
-        }
-        .sftp-header-row {
-            padding: 4px 0;
-            border-bottom: 1px solid #242a30;
-        }
-        .sftp-header-label {
-            color: #f0f3f6;
-            font-weight: 700;
-        }
-        .sftp-name-column {
-            font-weight: 600;
-        }
-        .sftp-metadata-column {
-            color: #c8cfd8;
-        }
-        button label {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            box-shadow: none;
-        }
-        button.flat, button.flat:hover, button.flat:active, button.flat:checked,
-        .tab-close-button, .tab-close-button:hover, .tab-close-button:active, .tab-close-button:checked {
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            border: none;
-            border-radius: 0;
-            box-shadow: none;
-            padding: 0 4px;
-        }
-        .tab-close-button:hover {
-            color: #f5f7fa;
-            background-color: #26303a;
-            border-radius: 4px;
-        }
-        .toolbar-button {
-            min-width: 68px;
-        }
-        .toolbar-icon-button,
-        .toolbar-icon-button:hover,
-        .toolbar-icon-button:active,
-        .toolbar-icon-button:checked {
-            min-width: 36px;
-            min-height: 34px;
-            margin: 0;
-            padding: 0;
-            border: 1px solid transparent;
-            border-radius: 8px;
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            box-shadow: none;
-        }
-        .toolbar-icon-button image {
-            margin: 0;
-            padding: 0;
-        }
-        .toolbar-icon-button:hover {
-            background-color: #172330;
-            border-color: #263545;
-        }
-        .toolbar-icon-button:active,
-        .toolbar-icon-button:checked {
-            background-color: #203247;
-            border-color: #34506c;
-        }
-        headerbar windowcontrols,
-        headerbar windowcontrols box,
-        headerbar windowcontrols image {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            box-shadow: none;
-        }
-        headerbar windowcontrols button,
-        headerbar windowcontrols button:hover,
-        headerbar windowcontrols button:active,
-        headerbar windowcontrols button:checked {
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            border: none;
-            border-radius: 0;
-            box-shadow: none;
-            outline: none;
-            padding: 6px 10px;
-        }
-        headerbar windowcontrols button:hover {
-            background-color: #26303a;
-        }
-        headerbar windowcontrols button.close:hover {
-            background-color: #b13a3a;
-            color: #f5f7fa;
-        }
-        entry, entry:focus, textview, textview text {
-            background: #11161b;
-            background-color: #11161b;
-            color: #d7dce2;
-            border: 1px solid #303842;
-            border-radius: 6px;
-        }
-        entry text,
-        entry image,
-        textview text {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            box-shadow: none;
-        }
-        combobox,
-        combobox:hover,
-        combobox:focus,
-        combobox box {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            border-image: none;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            padding: 0;
-            margin: 0;
-            transform: none;
-        }
-        combobox button,
-        combobox button:focus,
-        combobox button:hover,
-        combobox button:active,
-        combobox button:checked {
-            background: #11161b;
-            background-color: #11161b;
-            background-image: none;
-            color: #d7dce2;
-            border: 1px solid #303842;
-            border-image: none;
-            border-radius: 6px;
-            box-shadow: none;
-            min-height: 36px;
-            padding: 0 10px;
-            margin: 0;
-            outline-style: none;
-            outline-width: 0;
-            outline-offset: 0;
-            text-shadow: none;
-            -gtk-icon-shadow: none;
-            transition: none;
-            transform: none;
-        }
-        combobox button:hover,
-        combobox button:focus,
-        combobox button:checked {
-            border-color: #303842;
-        }
-        combobox button box,
-        combobox button cellview,
-        combobox button label,
-        combobox button image,
-        combobox arrow {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            border-image: none;
-            box-shadow: none;
-            min-height: 0;
-            margin: 0;
-            padding: 0;
-            outline-style: none;
-            outline-width: 0;
-            text-shadow: none;
-            -gtk-icon-shadow: none;
-            transform: none;
-            transition: none;
-        }
-        combobox button box {
-            border-spacing: 0;
-        }
-        combobox arrow {
-            min-width: 18px;
-        }
-        .stable-combo,
-        .stable-combo:hover,
-        .stable-combo:focus,
-        .stable-combo > box,
-        .stable-combo > box:hover {
-            min-height: 36px;
-            padding: 0;
-            margin: 0;
-            border: 0 solid transparent;
-            border-image: none;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            transform: none;
-            transition: none;
-        }
-        .stable-combo button,
-        .stable-combo button:hover,
-        .stable-combo button:focus,
-        .stable-combo button:active,
-        .stable-combo button:checked {
-            min-height: 36px;
-            padding: 0 10px;
-            margin: 0;
-            border-width: 1px;
-            border-style: solid;
-            border-color: #303842;
-            border-image: none;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            outline-offset: 0;
-            transform: none;
-            transition: none;
-        }
-        .stable-combo cellview,
-        .stable-combo cellview:hover,
-        .stable-combo label,
-        .stable-combo label:hover,
-        .stable-combo arrow,
-        .stable-combo arrow:hover {
-            margin: 0;
-            padding: 0;
-            border: 0 solid transparent;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            text-shadow: none;
-            -gtk-icon-shadow: none;
-            transform: none;
-            transition: none;
-        }
-        .stable-dropdown,
-        .stable-dropdown:hover,
-        .stable-dropdown:focus,
-        .stable-dropdown:active,
-        .stable-dropdown:checked {
-            min-height: 36px;
-            padding: 0 10px;
-            margin: 0;
-            background: #11161b;
-            background-color: #11161b;
-            background-image: none;
-            border: 1px solid #303842;
-            border-radius: 6px;
-            border-image: none;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            outline-offset: 0;
-            transform: none;
-            transition: none;
-        }
-        .stable-dropdown:hover,
-        .stable-dropdown:focus,
-        .stable-dropdown:checked {
-            border-color: #405267;
-            background-color: #17212b;
-        }
-        .stable-dropdown label,
-        .stable-dropdown image {
-            margin: 0;
-            padding: 0;
-            border: 0 solid transparent;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            text-shadow: none;
-            -gtk-icon-shadow: none;
-            transform: none;
-            transition: none;
-        }
-        .stable-dropdown-option,
-        .stable-dropdown-option:hover,
-        .stable-dropdown-option:focus,
-        .stable-dropdown-option:active,
-        .stable-dropdown-option:checked,
-        .stable-dropdown-option.hover {
-            background: transparent;
-            background-color: transparent;
-            background-image: none;
-            color: #d7dce2;
-            min-height: 34px;
-            min-width: 220px;
-            padding: 0 10px;
-            margin: 0;
-            border: 0 solid transparent;
-            border-radius: 6px;
-            border-image: none;
-            box-shadow: none;
-            outline-style: none;
-            outline-width: 0;
-            transform: none;
-            transition: none;
-        }
-        .stable-dropdown-option:hover,
-        .stable-dropdown-option:focus,
-        .stable-dropdown-option.hover {
-            background: #24303b;
-            background-color: #24303b;
-        }
-        .stable-dropdown-option label,
-        .stable-dropdown-option.hover label,
-        .stable-dropdown-option:hover label {
-            background: transparent;
-            background-color: transparent;
-            color: #d7dce2;
-            margin: 0;
-            padding: 0;
-            border: none;
-            box-shadow: none;
-            text-shadow: none;
-            transform: none;
-            transition: none;
-        }
-        combobox popover > contents,
-        combobox popover listbox,
-        combobox popover listbox row,
-        combobox popover modelbutton,
-        combobox popover button {
-            margin: 0;
-            border: 0 solid transparent;
-            box-shadow: none;
-            transform: none;
-            transition: none;
-        }
-        combobox popover listbox row,
-        combobox popover listbox row:hover,
-        combobox popover modelbutton,
-        combobox popover modelbutton:hover {
-            padding: 6px 10px;
-        }
-        entry selection, text selection, textview selection {
-            background-color: #35506b;
-            color: #f5f7fa;
-        }
-        label, checkbutton, checkbutton label {
-            color: #d7dce2;
-        }
-        notebook > header, notebook > header tabs {
-            background-color: #0f1419;
-            border-bottom: 1px solid #242a30;
-        }
-        notebook tab, stackswitcher button {
-            background-color: #161c22;
-            color: #cfd6de;
-            border: 1px solid #2b333c;
-            border-radius: 6px;
-        }
-        notebook tab:checked, stackswitcher button:checked {
-            background-color: #243344;
-        }
-        .session-tab-strip {
-            background-color: #0f1419;
-            border-bottom: 1px solid #242a30;
-            padding: 6px 10px;
-        }
-        .empty-workspace {
-            color: #d7dce2;
-            padding: 28px;
-            opacity: 1;
-        }
-        .empty-workspace-icon {
-            color: #5f6c78;
-            opacity: 0.78;
-            margin-bottom: 2px;
-        }
-        .empty-workspace-title {
-            color: #eef3f8;
-            font-size: 1.18em;
-            font-weight: 700;
-        }
-        .empty-workspace-subtitle {
-            color: #8e98a4;
-            font-size: 0.92em;
-        }
-        .empty-workspace-actions {
-            margin-top: 4px;
-        }
-        .empty-primary-action {
-            background-color: #1f74d2;
-            border-color: #2582ea;
-            color: #f6fbff;
-            min-height: 36px;
-            padding: 0 16px;
-        }
-        .empty-primary-action:hover {
-            background-color: #2682ea;
-            border-color: #3890f5;
-        }
-        .empty-primary-action:active {
-            background-color: #1765bc;
-            border-color: #2478db;
-        }
-        .empty-secondary-action {
-            min-height: 36px;
-            padding: 0 14px;
-        }
-        .dialog-content {
-            background-color: #0c1014;
-            padding: 16px;
-        }
-        .dialog-title,
-        .settings-page-title {
-            color: #eef3f8;
-            font-size: 1.2em;
-            font-weight: 700;
-        }
-        .dialog-subtitle,
-        .settings-page-subtitle {
-            color: #8e98a4;
-            font-size: 0.9em;
-        }
-        .dialog-actions,
-        .settings-actions {
-            margin-top: 4px;
-        }
-        .new-session-form {
-            background-color: #10161d;
-            border: 1px solid #263341;
-            border-radius: 10px;
-            padding: 12px;
-        }
-        .protocol-switcher {
-            margin-bottom: 8px;
-        }
-        .protocol-switcher button {
-            min-height: 34px;
-        }
-        .protocol-page {
-            background-color: transparent;
-            padding: 2px;
-        }
-        .form-grid {
-            margin-top: 4px;
-        }
-        .form-label {
-            color: #b9c0c9;
-            font-weight: 600;
-        }
-        .settings-page {
-            background-color: #0c1014;
-            padding: 26px;
-        }
-        .settings-page-content {
-            min-width: 680px;
-            padding: 0;
-        }
-        .settings-card {
-            background-color: #10161d;
-            border: 1px solid #263341;
-            border-radius: 10px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        .settings-card-title {
-            color: #eef3f8;
-            font-weight: 700;
-            margin-bottom: 6px;
-        }
-        .settings-expander {
-            background-color: #10161d;
-            border: 1px solid #263341;
-            border-radius: 10px;
-            padding: 10px 12px;
-            margin-bottom: 12px;
-        }
-        .settings-expander > title {
-            padding: 4px 0;
-        }
-        .session-tab-controls {
-            border: 1px solid #2b333c;
-            border-radius: 8px;
-        }
-        .session-strip-button,
-        .session-strip-button:hover,
-        .session-strip-button:active,
-        .session-strip-button:checked {
-            min-width: 36px;
-            min-height: 36px;
-            border: none;
-            border-radius: 0;
-            background: #1b2026;
-            background-color: #1b2026;
-            padding: 0;
-        }
-        .session-strip-button + .session-strip-button {
-            border-left: 1px solid #2b333c;
-        }
-        .session-tabs-scroll, .session-tabs-scroll viewport {
-            background: transparent;
-            background-color: transparent;
-        }
-        .session-tabs-box {
-            padding-left: 4px;
-        }
-        .session-tab-item {
-            background-color: #161c22;
-            border: 1px solid #2b333c;
-            border-radius: 8px;
-            padding: 0 4px 0 8px;
-            box-shadow: none;
-        }
-        .session-tab-item.compact {
-            padding: 0 2px 0 4px;
-        }
-        .session-tab-item.active {
-            background-color: #22354a;
-            border-color: #3e6d9f;
-            box-shadow: inset 0 -2px 0 #2d8cff;
-        }
-        .session-tab-button,
-        .session-tab-button:hover,
-        .session-tab-button:active,
-        .session-tab-button:checked {
-            border: none;
-            background: transparent;
-            background-color: transparent;
-            box-shadow: none;
-            padding: 8px 6px;
-        }
-        paned > separator {
-            background-color: #242a30;
-            min-width: 1px;
-            min-height: 1px;
-            padding: 0;
-            margin: 0;
-        }
-        .session-sidebar {
-            background: #0e1114;
-            background-color: #0e1114;
-            border-right: 1px solid #242a30;
-        }
-        .sidebar-nav {
-            min-width: 48px;
-        }
-        .sidebar-nav-button,
-        .sidebar-nav-button:hover,
-        .sidebar-nav-button:active,
-        .sidebar-nav-button:checked {
-            min-width: 44px;
-            min-height: 44px;
-            margin: 0;
-            padding: 0;
-            border: 1px solid transparent;
-            border-radius: 10px;
-            box-shadow: none;
-            font-size: 1.18em;
-        }
-        .sidebar-nav-button image {
-            margin: 0;
-            padding: 0;
-        }
-        .sidebar-nav-button:hover {
-            background-color: #172330;
-            border-color: transparent;
-        }
-        .sidebar-nav-button.active,
-        .sidebar-nav-button.active:hover {
-            background-color: #1c3d5f;
-            border-color: #275b8d;
-            color: #eef3f8;
-        }
-        .sidebar-panel {
-            min-width: 0;
-        }
-        .sidebar-panel-title {
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-        .sftp-search {
-            margin-bottom: 2px;
-        }
-        .sftp-path {
-            color: #aeb7c1;
-            padding: 2px 2px 6px 2px;
-        }
-        .sftp-status {
-            color: #aeb7c1;
-            font-size: 0.9em;
-        }
-        .sidebar-scroll, .sidebar-scroll viewport, .profiles-list {
-            background: #0f1419;
-            background-color: #0f1419;
-        }
-        .profiles-list row {
-            border-radius: 8px;
-            margin: 2px 0;
-        }
-        .profiles-list row:selected {
-            background-color: #1f3f5f;
-        }
-        .profiles-list row:hover {
-            background-color: #172330;
-        }
-        .sftp-entry-row {
-            padding: 0;
-        }
-        .sftp-entry-row-compact {
-            min-width: 0;
-        }
-        .sftp-entry-icon {
-            color: #7ab3ff;
-        }
-        .sftp-file-row .sftp-entry-icon {
-            color: #8b97a3;
-        }
-        .sftp-entry-detail {
-            font-size: 0.85em;
-        }
-        .app-status-bar {
-            background-color: #0e1114;
-            border-top: 1px solid #242a30;
-            padding: 0 10px;
-            min-height: 34px;
-        }
-        .host-info {
-            color: #b9c0c9;
-            padding: 0;
-        }
-        .status-label {
-            color: #8e98a4;
-            padding: 0;
-        }
-        .dim-label {
-            color: #8e98a4;
-            font-size: 0.88em;
-        }
-        "#,
-    );
+    provider.load_from_data(include_str!("../resources/workbench.css"));
     gtk4::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -1331,16 +435,6 @@ fn build_modal_window(
     win
 }
 
-fn build_sidebar_nav_button(icon_name: &str, tooltip: &str) -> Button {
-    let button = Button::new();
-    let image = Image::from_icon_name(icon_name);
-    button.set_child(Some(&image));
-    button.set_tooltip_text(Some(tooltip));
-    button.set_has_frame(false);
-    button.add_css_class("sidebar-nav-button");
-    button
-}
-
 fn build_header_icon_button(icon_name: &str, tooltip: &str) -> Button {
     let button = Button::new();
     let image = Image::from_icon_name(icon_name);
@@ -1361,20 +455,16 @@ fn build_empty_workspace(language: &AppLanguage) -> (GtkBox, Button, Button) {
     root.add_css_class("empty-workspace");
 
     let icon = Image::from_icon_name("utilities-terminal-symbolic");
-    icon.set_pixel_size(54);
+    icon.set_pixel_size(32);
     icon.add_css_class("empty-workspace-icon");
 
-    let title = Label::new(Some(tr(
-        language,
-        "选择一个入口开始",
-        "Choose a starting point",
-    )));
+    let title = Label::new(Some(tr(language, "准备开始", "Ready when you are")));
     title.add_css_class("empty-workspace-title");
 
     let subtitle = Label::new(Some(tr(
         language,
-        "打开本地终端、连接已保存会话，或创建一个新的远程配置。",
-        "Open a local terminal, connect a saved session, or create a new remote profile.",
+        "选择左侧会话，或打开一个本地终端。",
+        "Choose a saved session or open a local terminal.",
     )));
     subtitle.set_wrap(true);
     subtitle.set_justify(gtk4::Justification::Center);
@@ -1835,10 +925,7 @@ fn schedule_debug_local_terminal_autostart(state: &AppState) {
         for terminal in terminals.iter().cloned() {
             match spawn_local_tab(&state_for_open, &terminal) {
                 Ok(connection) => {
-                    reset_host_stats(
-                        &state_for_open,
-                        "Host: -    CPU: -    Mem: -    Net: -    Uptime: -",
-                    );
+                    reset_host_stats(&state_for_open, "—");
                     state_for_open
                         .connections
                         .borrow_mut()
@@ -1945,21 +1032,6 @@ fn remove_local_shell_profiles(document: &mut ProfilesDocument) -> bool {
     previous_len != document.profiles.len()
 }
 
-fn set_sidebar_nav_active(button: &Button, active: bool) {
-    if active {
-        button.add_css_class("active");
-    } else {
-        button.remove_css_class("active");
-    }
-}
-
-fn show_sidebar_section(state: &AppState, name: &str) {
-    close_active_popover(state);
-    state.sidebar_nav.stack.set_visible_child_name(name);
-    set_sidebar_nav_active(&state.sidebar_nav.sessions_button, name == "sessions");
-    set_sidebar_nav_active(&state.sidebar_nav.sftp_button, name == "sftp");
-}
-
 fn close_active_popover(state: &AppState) {
     let popover = state.active_popover.borrow_mut().take();
     if let Some(popover) = popover {
@@ -2044,7 +1116,6 @@ struct SessionTabStrip {
     tabs_box: GtkBox,
     add_button: Button,
     dropdown_button: Button,
-    width_cap: Rc<RefCell<Option<i32>>>,
 }
 
 #[derive(Clone)]
@@ -2055,22 +1126,10 @@ struct PageTab {
 }
 
 #[derive(Clone)]
-struct SidebarNav {
-    stack: Stack,
-    sessions_button: Button,
-    sftp_button: Button,
-}
-
-#[derive(Clone)]
-struct AppChrome {
-    new_session_button: Button,
-    settings_button: Button,
-    sidebar_title: Label,
-}
-
-#[derive(Clone)]
 struct SftpSidebar {
     container: GtkBox,
+    header_row: GtkBox,
+    connection_generation: Rc<Cell<u64>>,
     compact: bool,
     title_label: Label,
     search_entry: Entry,
@@ -2147,12 +1206,10 @@ struct AppState {
     page_shutdowns: Rc<RefCell<Vec<PageShutdown>>>,
     connections: Rc<RefCell<SessionHandles>>,
     host_stats_poller: Rc<RefCell<Option<glib::SourceId>>>,
-    window_size_cap: Rc<RefCell<Option<(i32, i32)>>>,
     active_popover: Rc<RefCell<Option<Popover>>>,
     local_terminals: Rc<Vec<LocalTerminalProfile>>,
-    chrome: AppChrome,
+    chrome: Workbench,
     session_tab_strip: SessionTabStrip,
-    sidebar_nav: SidebarNav,
     sftp_sidebar: SftpSidebar,
 }
 
@@ -2212,6 +1269,7 @@ struct AuthFields {
 #[derive(Clone)]
 struct NewSessionForm {
     protocol_stack: Stack,
+    group: Entry,
     ssh_name: Entry,
     ssh_host: Entry,
     ssh_port: Entry,
@@ -2254,10 +1312,14 @@ fn connect_profiles_context_menu(state: &AppState) {
     let state_for_click = state.clone();
     click.connect_released(move |_, _presses, x, y| {
         if let Some(row) = state_for_click.profiles_list.row_at_y(y as i32) {
+            let Some(index) = profile_index_for_row(&state_for_click.profiles_doc.borrow(), &row)
+            else {
+                return;
+            };
             state_for_click.profiles_list.select_row(Some(&row));
             show_profile_actions_popover(
                 &state_for_click,
-                row.index() as usize,
+                index,
                 gdk::Rectangle::new(x as i32, y as i32, 220, 20),
             );
         }
@@ -2384,7 +1446,7 @@ impl NewSessionForm {
             .map(|name| name.to_string())
             .unwrap_or_else(|| "ssh".to_string());
 
-        match active_protocol.as_str() {
+        let submission: anyhow::Result<ProfileSubmission> = match active_protocol.as_str() {
             "ssh" => {
                 let host = require_entry_text("SSH host", &self.ssh_host)?;
                 let mut profile = ConnectionProfile::new(
@@ -2480,7 +1542,11 @@ impl NewSessionForm {
                 })
             }
             other => anyhow::bail!("Unsupported protocol page: {other}"),
-        }
+        };
+        let mut submission = submission?;
+        let group = self.group.text().trim().to_string();
+        submission.profile.group = (!group.is_empty()).then_some(group);
+        Ok(submission)
     }
 }
 
@@ -3559,29 +2625,7 @@ fn language_from_combo_id(value: Option<String>) -> AppLanguage {
 
 fn apply_language_to_main_ui(state: &AppState) {
     let language = state.app_settings.borrow().language.clone();
-    state.chrome.new_session_button.set_tooltip_text(Some(tr(
-        &language,
-        "新建会话",
-        "New session",
-    )));
-    state
-        .chrome
-        .settings_button
-        .set_tooltip_text(Some(tr(&language, "设置", "Settings")));
-    state
-        .chrome
-        .sidebar_title
-        .set_text(tr(&language, "已保存会话", "Saved Sessions"));
-    state.sidebar_nav.sessions_button.set_tooltip_text(Some(tr(
-        &language,
-        "已保存会话",
-        "Sessions",
-    )));
-    state.sidebar_nav.sftp_button.set_tooltip_text(Some(tr(
-        &language,
-        "SFTP 浏览器",
-        "SFTP browser",
-    )));
+    state.chrome.update_language(&language);
     state.session_tab_strip.add_button.set_tooltip_text(Some(tr(
         &language,
         "打开首选本地终端",
@@ -3598,7 +2642,7 @@ fn apply_language_to_main_ui(state: &AppState) {
     state
         .sftp_sidebar
         .title_label
-        .set_text(tr(&language, "SFTP 浏览器", "SFTP Browser"));
+        .set_text(tr(&language, "远程文件", "Remote files"));
     state
         .sftp_sidebar
         .search_entry
@@ -3624,8 +2668,8 @@ fn apply_language_to_main_ui(state: &AppState) {
         ));
         state.sftp_sidebar.status_label.set_text(tr(
             &language,
-            "点击 SFTP 图标浏览当前远程会话。",
-            "Click the SFTP icon to browse the current remote session.",
+            "打开 SSH 或 SFTP 会话后在这里浏览文件。",
+            "Open an SSH or SFTP session to browse its files here.",
         ));
     }
     for index in 0..state.notebook.n_pages() {
@@ -3844,14 +2888,14 @@ fn page_context_for_widget(state: &AppState, page: &Widget) -> Option<PageContex
 
 fn sync_active_page_state(state: &AppState, context: Option<PageContext>) {
     sync_host_stats_for_page_context(state, context.as_ref());
-    if state.sidebar_nav.stack.visible_child_name().as_deref() == Some("sftp") {
+    if state.chrome.files_visible() {
         activate_sftp_sidebar_for_page_context(state, context);
     }
 }
 
 fn sync_host_stats_for_page_context(state: &AppState, context: Option<&PageContext>) {
     let Some(context) = context else {
-        reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+        reset_host_stats(state, "—");
         return;
     };
 
@@ -3859,7 +2903,7 @@ fn sync_host_stats_for_page_context(state: &AppState, context: Option<&PageConte
         context.profile.protocol,
         ProtocolKind::Ssh | ProtocolKind::Sftp
     ) {
-        reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+        reset_host_stats(state, "—");
         return;
     }
 
@@ -4154,6 +3198,8 @@ fn show_text_prompt(
 }
 
 fn populate_form_from_profile(form: &NewSessionForm, profile: &ConnectionProfile) {
+    form.group
+        .set_text(profile.group.as_deref().unwrap_or_default());
     match profile.protocol {
         ProtocolKind::LocalShell => {}
         ProtocolKind::Ssh => {
@@ -4299,7 +3345,7 @@ fn build_new_session_form(language: &AppLanguage) -> (GtkBox, NewSessionForm) {
     switcher.add_css_class("protocol-switcher");
     let protocol_stack = Stack::new();
     protocol_stack.set_transition_type(StackTransitionType::Crossfade);
-    protocol_stack.set_transition_duration(SIDEBAR_STACK_TRANSITION_MS);
+    protocol_stack.set_transition_duration(WORKSPACE_STACK_TRANSITION_MS);
     protocol_stack.set_vexpand(true);
     protocol_stack.add_css_class("protocol-stack");
     switcher.set_stack(Some(&protocol_stack));
@@ -4407,11 +3453,23 @@ fn build_new_session_form(language: &AppLanguage) -> (GtkBox, NewSessionForm) {
 
     container.append(&switcher);
     container.append(&protocol_stack);
+    let group = new_entry(
+        tr(
+            language,
+            "可选，例如：生产环境",
+            "Optional, e.g. Production",
+        ),
+        None,
+    );
+    let group_grid = form_grid();
+    add_form_row(&group_grid, 0, tr(language, "分组", "Group"), &group);
+    container.append(&group_grid);
 
     (
         container,
         NewSessionForm {
             protocol_stack,
+            group,
             ssh_name,
             ssh_host,
             ssh_port,
@@ -5006,79 +4064,6 @@ fn should_delete_replaced_secret(
     previous_ref != current_ref && !matches!(previous_ref, CredentialsRef::None)
 }
 
-fn refresh_profile_list_for_state(state: &AppState) {
-    refresh_profile_list_internal(
-        &state.profiles_list,
-        &state.profiles_doc.borrow(),
-        Some(state),
-    );
-}
-
-fn refresh_profile_list_internal(
-    list: &ListBox,
-    document: &ProfilesDocument,
-    state: Option<&AppState>,
-) {
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
-
-    for (index, profile) in document.profiles.iter().enumerate() {
-        if matches!(profile.protocol, ProtocolKind::LocalShell) {
-            continue;
-        }
-        let row = make_profile_row(profile, index, state);
-        list.append(&row);
-    }
-}
-
-fn make_profile_row(
-    profile: &ConnectionProfile,
-    _index: usize,
-    state: Option<&AppState>,
-) -> ListBoxRow {
-    let row = ListBoxRow::new();
-    let content = GtkBox::new(Orientation::Horizontal, 8);
-    content.set_margin_top(6);
-    content.set_margin_bottom(6);
-    content.set_margin_start(8);
-    content.set_margin_end(8);
-
-    let text_column = GtkBox::new(Orientation::Vertical, 2);
-    text_column.set_hexpand(true);
-
-    let title = Label::new(Some(&profile.name));
-    title.set_xalign(0.0);
-    let subtitle = Label::new(Some(&profile_summary(profile)));
-    subtitle.set_xalign(0.0);
-    subtitle.add_css_class("dim-label");
-
-    text_column.append(&title);
-    text_column.append(&subtitle);
-    content.append(&text_column);
-
-    if let Some(state) = state {
-        let sftp_button = Button::new();
-        sftp_button.set_has_frame(false);
-        sftp_button.add_css_class("profile-sftp-button");
-        sftp_button.set_tooltip_text(Some("Open this saved session as SFTP"));
-        sftp_button.set_valign(gtk4::Align::Center);
-        sftp_button.set_child(Some(&Image::from_icon_name("folder-symbolic")));
-        sftp_button.set_sensitive(profile_supports_sftp_shortcut(profile));
-
-        let state_for_sftp = state.clone();
-        let profile_for_sftp = profile.clone();
-        sftp_button.connect_clicked(move |_| {
-            connect_saved_profile_sftp(&state_for_sftp, profile_for_sftp.clone());
-        });
-
-        content.append(&sftp_button);
-    }
-
-    row.set_child(Some(&content));
-    row
-}
-
 fn profile_summary(profile: &ConnectionProfile) -> String {
     match profile.protocol {
         ProtocolKind::LocalShell => "Local shell".to_string(),
@@ -5528,7 +4513,7 @@ fn open_profile_connection(state: &AppState, profile: ConnectionProfile, passwor
             }
         }
         ProtocolKind::Ftp => {
-            reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+            reset_host_stats(state, "—");
             let Some(host) = profile.host.as_deref() else {
                 state.status.set_text("FTP host is missing");
                 return;
@@ -5546,7 +4531,7 @@ fn open_profile_connection(state: &AppState, profile: ConnectionProfile, passwor
             }
         }
         ProtocolKind::Telnet => {
-            reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+            reset_host_stats(state, "—");
             let Some(host) = profile.host.as_deref() else {
                 state.status.set_text("Telnet host is missing");
                 return;
@@ -5561,7 +4546,7 @@ fn open_profile_connection(state: &AppState, profile: ConnectionProfile, passwor
             }
         }
         ProtocolKind::Serial => {
-            reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+            reset_host_stats(state, "—");
             let Some(port_name) = profile.serial_port.as_deref() else {
                 state.status.set_text("Serial port is missing");
                 return;
@@ -5576,7 +4561,7 @@ fn open_profile_connection(state: &AppState, profile: ConnectionProfile, passwor
             }
         }
         ProtocolKind::Vnc => {
-            reset_host_stats(state, "Host: -    CPU: -    Mem: -    Net: -    Uptime: -");
+            reset_host_stats(state, "—");
             state.status.set_text("VNC is not implemented yet");
         }
     }

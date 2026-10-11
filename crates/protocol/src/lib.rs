@@ -6,11 +6,14 @@
 
 mod ftp;
 mod local_shell;
+mod output;
 mod pty_connection;
 mod serial;
 mod sftp;
 mod ssh;
+mod ssh_transport;
 mod telnet;
+mod transfer_paths;
 
 pub use ftp::{FtpConfig, FtpConnection};
 pub use local_shell::LocalShellConnection;

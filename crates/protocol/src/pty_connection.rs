@@ -1,15 +1,22 @@
 use std::io::Read;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread::{self, JoinHandle};
 
 use shell_core::{ProtocolEvent, Result, ShellError, TerminalSize};
 use shell_platform::{LocalPty, PtyConfig};
+
+use crate::output::{OutputSender, output_channel};
 
 pub struct PtyConnection {
     // `Option` 让 shutdown 只获取一次所有权。互斥锁保护来自 UI 回调的写入/尺寸调整，
     // 读取线程只持有 `LocalPty::spawn` 返回的克隆读取器。
     pty: Arc<Mutex<Option<LocalPty>>>,
     reader_thread: Option<JoinHandle<()>>,
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl PtyConnection {
@@ -18,7 +25,8 @@ impl PtyConnection {
         reader_thread_name: impl Into<String>,
     ) -> Result<(Self, mpsc::Receiver<ProtocolEvent>)> {
         let (pty, mut reader) = LocalPty::spawn(config)?;
-        let (sender, receiver) = mpsc::channel();
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = output_channel(Arc::clone(&shutdown_requested));
 
         let reader_thread = thread::Builder::new()
             .name(reader_thread_name.into())
@@ -29,6 +37,7 @@ impl PtyConnection {
             Self {
                 pty: Arc::new(Mutex::new(Some(pty))),
                 reader_thread: Some(reader_thread),
+                shutdown_requested,
             },
             receiver,
         ))
@@ -57,6 +66,7 @@ impl PtyConnection {
     }
 
     pub fn shutdown(&self) -> Result<()> {
+        self.shutdown_requested.store(true, Ordering::Relaxed);
         let mut pty = self
             .pty
             .lock()
@@ -79,7 +89,7 @@ impl Drop for PtyConnection {
     }
 }
 
-fn read_loop(reader: &mut Box<dyn Read + Send>, sender: mpsc::Sender<ProtocolEvent>) {
+fn read_loop(reader: &mut Box<dyn Read + Send>, sender: OutputSender) {
     // 将阻塞 PTY 读取转换为 UI 使用的少量事件。EOF/error 之后是关闭、更新状态还是
     // 重连，由 UI 层根据页面类型决定。
     let mut buffer = [0_u8; 8192];

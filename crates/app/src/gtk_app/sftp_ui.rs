@@ -6,9 +6,10 @@ const SFTP_PROGRESS_PULSE_STEP: f64 = 0.04;
 pub(super) fn build_sftp_sidebar(compact: bool, language: &AppLanguage) -> SftpSidebar {
     let container = GtkBox::new(Orientation::Vertical, 8);
     container.add_css_class("sidebar-panel");
+    container.add_css_class("sftp-browser");
 
     let title_row = GtkBox::new(Orientation::Horizontal, 6);
-    let title = Label::new(Some(tr(language, "SFTP 浏览器", "SFTP Browser")));
+    let title = Label::new(Some(tr(language, "远程文件", "Remote files")));
     title.set_xalign(0.0);
     title.set_hexpand(true);
     title.add_css_class("sidebar-panel-title");
@@ -66,11 +67,13 @@ pub(super) fn build_sftp_sidebar(compact: bool, language: &AppLanguage) -> SftpS
 
     let status_label = Label::new(Some(tr(
         language,
-        "点击 SFTP 图标浏览当前远程会话。",
-        "Click the SFTP icon to browse the current remote session.",
+        "连接 SSH 或 SFTP 会话后浏览远程文件。",
+        "Connect an SSH or SFTP session to browse remote files.",
     )));
     status_label.set_xalign(0.0);
-    status_label.set_wrap(true);
+    status_label.set_ellipsize(pango::EllipsizeMode::End);
+    status_label.set_width_chars(1);
+    status_label.connect_label_notify(|label| label.set_tooltip_text(Some(label.text().as_str())));
     status_label.add_css_class("sftp-status");
 
     let progress_bar = ProgressBar::new();
@@ -111,12 +114,34 @@ pub(super) fn build_sftp_sidebar(compact: bool, language: &AppLanguage) -> SftpS
         "Rename the selected file or folder",
     )));
     title_row.append(&title);
+    if !compact {
+        title.set_hexpand(false);
+        path_label.set_hexpand(true);
+        search_entry.set_hexpand(false);
+        search_entry.set_width_chars(12);
+        search_entry.set_max_width_chars(18);
+        title_row.append(&path_label);
+        title_row.append(&search_entry);
+    }
     title_row.append(&refresh_button);
     title_row.append(&upload_button);
+    if !compact {
+        for (button, icon) in [
+            (&download_button, "document-save-symbolic"),
+            (&mkdir_button, "folder-new-symbolic"),
+        ] {
+            button.set_child(Some(&Image::from_icon_name(icon)));
+            button.set_has_frame(false);
+            button.add_css_class("sftp-toolbar-button");
+            title_row.append(button);
+        }
+    }
 
     container.append(&title_row);
-    container.append(&search_entry);
-    container.append(&path_label);
+    if compact {
+        container.append(&search_entry);
+        container.append(&path_label);
+    }
     container.append(&header);
     container.append(&scroll);
     container.append(&status_label);
@@ -124,6 +149,8 @@ pub(super) fn build_sftp_sidebar(compact: bool, language: &AppLanguage) -> SftpS
 
     SftpSidebar {
         container,
+        header_row: title_row,
+        connection_generation: Rc::new(Cell::new(0)),
         compact,
         title_label: title,
         search_entry,
@@ -158,10 +185,10 @@ pub(super) fn build_sftp_header_row(compact: bool, language: &AppLanguage) -> Gt
         return row;
     }
 
-    let name = sftp_column_label(tr(language, "名称", "Name"), 220, true);
-    let modified = sftp_column_label(tr(language, "修改时间", "Modified"), 150, false);
-    let permissions = sftp_column_label(tr(language, "权限", "Permissions"), 100, false);
-    let size = sftp_column_label(tr(language, "大小", "Size"), 80, false);
+    let name = sftp_column_label(tr(language, "名称", "Name"), 176, true);
+    let modified = sftp_column_label(tr(language, "修改时间", "Modified"), 140, false);
+    let permissions = sftp_column_label(tr(language, "权限", "Permissions"), 84, false);
+    let size = sftp_column_label(tr(language, "大小", "Size"), 72, false);
     row.append(&name);
     row.append(&modified);
     row.append(&permissions);
@@ -186,6 +213,9 @@ pub(super) fn clear_list_box(list: &ListBox) {
 }
 
 pub(super) fn reset_sftp_sidebar(sidebar: &SftpSidebar, path: &str, status: &str) {
+    sidebar
+        .connection_generation
+        .set(sidebar.connection_generation.get().wrapping_add(1));
     clear_list_box(&sidebar.list);
     *sidebar.session.borrow_mut() = None;
     *sidebar.config_key.borrow_mut() = None;
@@ -1212,8 +1242,10 @@ pub(super) fn open_sftp_browser_for_config(
     {
         let current_key = browser.config_key.borrow();
         let current_session = browser.session.borrow();
-        if current_session.is_some() && current_key.as_deref() == Some(target_key.as_str()) {
-            refresh_sftp_list(&browser);
+        if current_key.as_deref() == Some(target_key.as_str()) {
+            if current_session.is_some() {
+                refresh_sftp_list(&browser);
+            }
             return;
         }
     }
@@ -1223,50 +1255,66 @@ pub(super) fn open_sftp_browser_for_config(
         "/",
         &format!("Connecting to {}:{}…", config.host, config.port),
     );
+    *browser.config_key.borrow_mut() = Some(target_key.clone());
     let browser_for_result = browser.clone();
+    let generation = browser.connection_generation.get();
     let status_message = format!("Connecting SFTP browser to {}…", config.host);
     let target_key_for_result = target_key.clone();
     run_background_task(
         state,
         Some(&status_message),
         move || SftpSession::connect(&config),
-        move |state, result| match result {
-            Ok(session) => {
-                let cwd = match session.cwd() {
-                    Ok(cwd) => cwd,
-                    Err(err) => {
-                        reset_sftp_sidebar(
-                            &browser_for_result,
-                            "/",
-                            &format!("SFTP connection failed: {err}"),
-                        );
-                        state
-                            .status
-                            .set_text(&format!("SFTP connection failed: {err}"));
-                        return;
-                    }
-                };
-                *browser_for_result.session.borrow_mut() = Some(session);
-                *browser_for_result.config_key.borrow_mut() = Some(target_key_for_result);
-                browser_for_result
-                    .path_label
-                    .set_text(&cwd.to_string_lossy());
-                browser_for_result.search_entry.set_text("");
-                refresh_sftp_list(&browser_for_result);
-                state.status.set_text(ready_status);
-            }
-            Err(err) => {
-                reset_sftp_sidebar(
-                    &browser_for_result,
-                    "/",
-                    &format!("SFTP connection failed: {err}"),
-                );
-                state
-                    .status
-                    .set_text(&format!("SFTP connection failed: {err}"));
-            }
+        move |state, result| {
+            apply_sftp_connection_result(
+                state,
+                &browser_for_result,
+                generation,
+                target_key_for_result,
+                ready_status,
+                result,
+            )
         },
     );
+}
+
+pub(super) fn apply_sftp_connection_result(
+    state: &AppState,
+    browser: &SftpSidebar,
+    generation: u64,
+    target_key: String,
+    ready_status: &str,
+    result: anyhow::Result<SftpSession>,
+) {
+    // A slower connection must not replace the host selected more recently.
+    if browser.connection_generation.get() != generation {
+        return;
+    }
+    match result {
+        Ok(session) => {
+            let cwd = match session.cwd() {
+                Ok(cwd) => cwd,
+                Err(err) => {
+                    reset_sftp_sidebar(browser, "/", &format!("SFTP connection failed: {err}"));
+                    state
+                        .status
+                        .set_text(&format!("SFTP connection failed: {err}"));
+                    return;
+                }
+            };
+            *browser.session.borrow_mut() = Some(session);
+            *browser.config_key.borrow_mut() = Some(target_key);
+            browser.path_label.set_text(&cwd.to_string_lossy());
+            browser.search_entry.set_text("");
+            refresh_sftp_list(browser);
+            state.status.set_text(ready_status);
+        }
+        Err(err) => {
+            reset_sftp_sidebar(browser, "/", &format!("SFTP connection failed: {err}"));
+            state
+                .status
+                .set_text(&format!("SFTP connection failed: {err}"));
+        }
+    }
 }
 
 pub(super) fn open_sftp_sidebar_for_config(state: &AppState, config: SftpConfig) {
@@ -1538,17 +1586,17 @@ pub(super) fn populate_sftp_list(
     populate_sftp_list_filtered(list, session, status, "", false);
 }
 
-struct SftpRowDisplay<'a> {
-    name: &'a str,
-    modified: &'a str,
-    permissions: &'a str,
-    size: &'a str,
-    icon_name: &'a str,
-    row_class: &'a str,
-    compact: bool,
+pub(super) struct SftpRowDisplay<'a> {
+    pub name: &'a str,
+    pub modified: &'a str,
+    pub permissions: &'a str,
+    pub size: &'a str,
+    pub icon_name: &'a str,
+    pub row_class: &'a str,
+    pub compact: bool,
 }
 
-fn append_sftp_row(list: &ListBox, display: SftpRowDisplay<'_>) {
+pub(super) fn append_sftp_row(list: &ListBox, display: SftpRowDisplay<'_>) {
     let row = ListBoxRow::new();
     row.add_css_class("sftp-entry-row");
     row.add_css_class(display.row_class);
@@ -1604,7 +1652,7 @@ fn append_sftp_row(list: &ListBox, display: SftpRowDisplay<'_>) {
 
     let name_column = GtkBox::new(Orientation::Horizontal, 8);
     name_column.set_hexpand(true);
-    name_column.set_size_request(220, -1);
+    name_column.set_size_request(152, -1);
 
     let name_label = Label::new(Some(display.name));
     name_label.set_xalign(0.0);
@@ -1612,9 +1660,9 @@ fn append_sftp_row(list: &ListBox, display: SftpRowDisplay<'_>) {
     name_label.add_css_class("sftp-entry-name");
     name_label.add_css_class("sftp-name-column");
 
-    let modified_label = sftp_metadata_label(display.modified, 150);
-    let permissions_label = sftp_metadata_label(display.permissions, 100);
-    let size_label = sftp_metadata_label(display.size, 80);
+    let modified_label = sftp_metadata_label(display.modified, 140);
+    let permissions_label = sftp_metadata_label(display.permissions, 84);
+    let size_label = sftp_metadata_label(display.size, 72);
 
     content.append(&icon);
     name_column.append(&name_label);

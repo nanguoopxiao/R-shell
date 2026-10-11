@@ -1,9 +1,8 @@
 use super::*;
 
-pub(super) fn format_host_stats(host: &str, stats: &HostStats) -> String {
+pub(super) fn format_host_stats(_host: &str, stats: &HostStats) -> String {
     format!(
-        "Host: {}    CPU: {:.0}%    Mem: {}/{} MB    Net: ↓{}/s ↑{}/s    Uptime: {}",
-        host,
+        "CPU {:.0}%  ·  RAM {}/{} MB  ·  ↓{}/s ↑{}/s  ·  {}",
         stats.cpu_percent,
         stats.mem_used_mb,
         stats.mem_total_mb,

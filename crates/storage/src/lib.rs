@@ -135,6 +135,35 @@ impl Default for OpensshCompatibilitySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceLayoutSettings {
+    pub sidebar_visible: bool,
+    pub files_visible: bool,
+    pub sidebar_width: i32,
+    pub files_height: i32,
+}
+
+impl Default for WorkspaceLayoutSettings {
+    fn default() -> Self {
+        Self {
+            sidebar_visible: true,
+            files_visible: false,
+            sidebar_width: 220,
+            files_height: 240,
+        }
+    }
+}
+
+impl WorkspaceLayoutSettings {
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        self.sidebar_width = self.sidebar_width.clamp(180, 420);
+        self.files_height = self.files_height.clamp(160, 480);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// 终端视图使用的 Pango 字体描述。
     pub terminal_font: String,
@@ -148,6 +177,8 @@ pub struct AppSettings {
     pub openssh_compatibility: OpensshCompatibilitySettings,
     #[serde(default)]
     pub builtin_tools: BuiltinToolsSettings,
+    #[serde(default)]
+    pub workspace_layout: WorkspaceLayoutSettings,
 }
 
 fn default_semantic_highlighting() -> bool {
@@ -165,6 +196,7 @@ impl Default for AppSettings {
             language: AppLanguage::default(),
             openssh_compatibility: OpensshCompatibilitySettings::default(),
             builtin_tools: BuiltinToolsSettings::default(),
+            workspace_layout: WorkspaceLayoutSettings::default(),
         }
     }
 }
@@ -790,6 +822,7 @@ mod tests {
                 use_for_ssh_client: true,
                 path_priority: BuiltinToolsPathPriority::ToolchainFirst,
             },
+            workspace_layout: WorkspaceLayoutSettings::default(),
         };
 
         save_settings(&settings_path, &settings).unwrap();
@@ -814,6 +847,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.builtin_tools, BuiltinToolsSettings::default());
+        assert_eq!(
+            settings.workspace_layout,
+            WorkspaceLayoutSettings::default()
+        );
+    }
+
+    #[test]
+    fn loads_partial_workspace_layout_and_bounds_panel_sizes() {
+        let layout: WorkspaceLayoutSettings = serde_json::from_str(
+            r#"{"files_visible":true,"sidebar_width":-10,"files_height":10000}"#,
+        )
+        .unwrap();
+        let normalized = layout.normalized();
+        assert!(normalized.sidebar_visible && normalized.files_visible);
+        assert_eq!(normalized.sidebar_width, 180);
+        assert_eq!(normalized.files_height, 480);
+        assert_eq!(
+            serde_json::from_value::<WorkspaceLayoutSettings>(
+                serde_json::to_value(&normalized).unwrap()
+            )
+            .unwrap(),
+            normalized
+        );
     }
 
     #[test]

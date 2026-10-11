@@ -6,6 +6,9 @@
 
 use crate::TerminalBuffer;
 
+const MAX_CSI_BYTES: usize = 1024;
+const MAX_RESPONSE_BYTES: usize = 4096;
+
 /// ANSI/VT100/xterm 转义序列解析器。
 ///
 /// 通过状态机覆盖常见终端程序（bash、vim、htop、tmux 等）使用的序列。未知序列会被
@@ -13,10 +16,11 @@ use crate::TerminalBuffer;
 #[derive(Debug, Default)]
 pub struct AnsiParser {
     state: ParserState,
-    /// CSI / OSC 的中间字节缓冲。
+    /// CSI 的中间字节缓冲；不保留尚未支持的 OSC 载荷。
     buf: String,
     /// 跨 PTY 读取被切开的 UTF-8 尾部字节。
     utf8_carry: Vec<u8>,
+    responses: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -27,8 +31,12 @@ enum ParserState {
     Escape,
     /// 处于 CSI（ESC [）序列内部。
     Csi,
+    /// Ignore an overlong CSI until its final byte, without growing memory.
+    CsiDiscard,
     /// 处于 OSC（ESC ]）序列内部。
     Osc,
+    /// Unsupported DCS/APC/PM/SOS strings are discarded through ST.
+    ControlString,
     /// 已收到 ESC ( 或 ESC ) 字符集指定序列；跳过一个字节。
     CharsetSkip,
 }
@@ -37,6 +45,10 @@ impl AnsiParser {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn take_responses(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.responses)
     }
 
     pub fn feed_bytes(&mut self, buffer: &mut TerminalBuffer, bytes: &[u8]) {
@@ -86,6 +98,12 @@ impl AnsiParser {
         // CAN / SUB 在任意状态下都会取消当前序列。
         if matches!(ch, '\u{18}' | '\u{1a}') {
             self.state = ParserState::Ground;
+            self.buf.clear();
+            return;
+        }
+        if ch == '\u{1b}' {
+            self.buf.clear();
+            self.state = ParserState::Escape;
             return;
         }
 
@@ -93,7 +111,8 @@ impl AnsiParser {
             ParserState::Ground => match ch {
                 '\u{07}' => {} // BEL – ignore in ground state
                 '\u{1b}' => self.state = ParserState::Escape,
-                '\n' | '\r' | '\u{8}' => buffer.put_char(ch),
+                '\n' | '\u{0b}' | '\u{0c}' => buffer.line_feed(),
+                '\r' | '\u{8}' => buffer.put_char(ch),
                 '\t' => buffer.tab(),
                 ch if (ch as u32) < 0x20 => {} // ignore remaining C0
                 ch => buffer.put_char(ch),
@@ -108,12 +127,13 @@ impl AnsiParser {
                     self.buf.clear();
                     self.state = ParserState::Osc;
                 }
+                'P' | '^' | '_' | 'X' => self.state = ParserState::ControlString,
                 '(' | ')' | '*' | '+' => {
                     self.state = ParserState::CharsetSkip;
                 }
                 'c' => {
                     // RIS：完全重置。
-                    *buffer = TerminalBuffer::new(buffer.size(), 10_000);
+                    buffer.reset();
                     self.state = ParserState::Ground;
                 }
                 '7' => {
@@ -125,13 +145,15 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 }
                 'D' => {
-                    // IND：索引；当前实现中等同于 LF。
+                    buffer.index();
+                    self.state = ParserState::Ground;
+                }
+                'E' => {
                     buffer.new_line();
                     self.state = ParserState::Ground;
                 }
                 'M' => {
-                    // RI：反向索引，向下滚动一行。
-                    buffer.scroll_down(1);
+                    buffer.reverse_index();
                     self.state = ParserState::Ground;
                 }
                 _ => self.state = ParserState::Ground,
@@ -143,47 +165,44 @@ impl AnsiParser {
             }
 
             ParserState::Osc => {
-                // 持续收集，直到 ST（ESC \）、BEL（0x07）或另一个 ESC。
-                match ch {
-                    '\u{07}' => {
-                        // BEL 结束 OSC。
-                        self.handle_osc(buffer);
-                        self.buf.clear();
-                        self.state = ParserState::Ground;
-                    }
-                    '\u{1b}' => {
-                        // ESC 可能是 ESC \（ST）的开始；转回 Escape 状态。这里会丢弃
-                        // 当前挂起序列，但能避免解析器卡死。
-                        self.state = ParserState::Escape;
-                    }
-                    '\\' if matches!(self.state, ParserState::Osc) => {
-                        // '\\' alone inside OSC is unusual; just collect.
-                        self.buf.push(ch);
-                    }
-                    _ => self.buf.push(ch),
+                // OSC is not implemented yet. Discard its payload rather than
+                // buffering an arbitrarily long title/clipboard sequence.
+                // ESC is handled above, including the ESC \\ terminator.
+                if ch == '\u{07}' {
+                    self.state = ParserState::Ground;
                 }
             }
+            ParserState::ControlString => {}
 
             ParserState::Csi => {
-                if ch.is_ascii_alphabetic() || ch == '@' {
+                if ('@'..='~').contains(&ch) {
                     let params = parse_csi_params(&self.buf);
-                    handle_csi(buffer, &params, ch, &self.buf);
+                    if let Some(response) = handle_csi(buffer, &params, ch, &self.buf)
+                        && self.responses.len() + response.len() <= MAX_RESPONSE_BYTES
+                    {
+                        self.responses.extend_from_slice(&response);
+                    }
                     self.buf.clear();
                     self.state = ParserState::Ground;
                 } else if ch.is_ascii_digit() || matches!(ch, ';' | '?' | ':' | '>' | '!' | ' ') {
-                    self.buf.push(ch);
+                    if self.buf.len() < MAX_CSI_BYTES {
+                        self.buf.push(ch);
+                    } else {
+                        self.buf.clear();
+                        self.state = ParserState::CsiDiscard;
+                    }
                 } else {
                     // 遇到意外字节，放弃当前序列。
                     self.buf.clear();
                     self.state = ParserState::Ground;
                 }
             }
+            ParserState::CsiDiscard => {
+                if ('@'..='~').contains(&ch) {
+                    self.state = ParserState::Ground;
+                }
+            }
         }
-    }
-
-    fn handle_osc(&self, _buffer: &mut TerminalBuffer) {
-        // 常见 OSC：0;title，用于设置图标名和窗口标题。当前还没有窗口标题回调，
-        // 因此静默忽略。
     }
 }
 
@@ -199,7 +218,12 @@ fn parse_csi_params(raw: &str) -> Vec<u16> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn handle_csi(buffer: &mut TerminalBuffer, params: &[u16], command: char, raw: &str) {
+fn handle_csi(
+    buffer: &mut TerminalBuffer,
+    params: &[u16],
+    command: char,
+    raw: &str,
+) -> Option<Vec<u8>> {
     let p0 = params.first().copied().unwrap_or(0);
     let p1 = params.get(1).copied().unwrap_or(0);
 
@@ -231,7 +255,7 @@ fn handle_csi(buffer: &mut TerminalBuffer, params: &[u16], command: char, raw: &
         'H' | 'f' => {
             let row = p0.max(1).saturating_sub(1) as usize;
             let col = p1.max(1).saturating_sub(1) as usize;
-            buffer.move_cursor(row, col);
+            buffer.position_cursor(row, col);
         }
         // ED：擦除显示区域。
         'J' => buffer.erase_display(p0),
@@ -247,21 +271,8 @@ fn handle_csi(buffer: &mut TerminalBuffer, params: &[u16], command: char, raw: &
         'S' => buffer.scroll_up(p0.max(1) as usize),
         // SD：向下滚动。
         'T' => buffer.scroll_down(p0.max(1) as usize),
-        // ECH：擦除字符；当前按从光标开始填充空白处理。
-        'X' => {
-            let n = p0.max(1) as usize;
-            let col = buffer.cursor().col;
-            let row = buffer.cursor().row;
-            // 为每个被擦除的单元格临时推进光标。
-            for offset in 0..n {
-                let _ = offset;
-                buffer.erase_in_line(0);
-                if buffer.cursor().col + 1 < buffer.size().cols as usize {
-                    buffer.cursor_forward(1);
-                }
-            }
-            buffer.move_cursor(row, col);
-        }
+        // ECH：只擦除请求的列，保留光标和后续内容。
+        'X' => buffer.erase_chars(p0.max(1) as usize),
         // VPA：垂直绝对定位，参数从 1 开始。
         'd' => buffer.cursor_row(p0.max(1) as usize),
         // ICH：插入字符。
@@ -284,23 +295,30 @@ fn handle_csi(buffer: &mut TerminalBuffer, params: &[u16], command: char, raw: &
         'h' | 'l' => {
             let enable = command == 'h';
             if is_dec {
-                match p0 {
-                    // DECTCEM：光标可见性。
-                    25 => buffer.set_cursor_visible(enable),
-                    // smcup / rmcup：备用屏幕。
-                    47 | 1047 | 1049 => {
-                        if enable {
-                            buffer.enter_alt_screen();
-                        } else {
-                            buffer.exit_alt_screen();
-                        }
+                for mode in params {
+                    buffer.set_private_mode(*mode, enable);
+                }
+            } else if !raw.starts_with('>') {
+                for mode in params {
+                    if *mode == 20 {
+                        buffer.set_newline_mode(enable);
                     }
-                    _ => {}
                 }
             }
         }
+        'n' if p0 == 5 && !is_dec && !raw.starts_with('>') => return Some(b"\x1b[0n".to_vec()),
+        'n' if p0 == 6 && !raw.starts_with('>') => {
+            let cursor = buffer.reported_cursor();
+            let prefix = if is_dec { "?" } else { "" };
+            return Some(
+                format!("\x1b[{prefix}{};{}R", cursor.row + 1, cursor.col + 1).into_bytes(),
+            );
+        }
+        'c' if p0 == 0 && raw.starts_with('>') => return Some(b"\x1b[>0;1;0c".to_vec()),
+        'c' if p0 == 0 && !is_dec => return Some(b"\x1b[?1;2c".to_vec()),
         _ => {}
     }
+    None
 }
 
 #[cfg(test)]
@@ -320,7 +338,7 @@ mod tests {
     #[test]
     fn parses_text_and_newlines() {
         let (mut p, mut buf) = make_parser_and_buf(10, 3);
-        p.feed_str(&mut buf, "one\ntwo");
+        p.feed_str(&mut buf, "one\r\ntwo");
         assert_eq!(buf.line_text(0).unwrap()[..3].to_string(), "one");
         assert_eq!(buf.line_text(1).unwrap()[..3].to_string(), "two");
     }
@@ -337,11 +355,185 @@ mod tests {
     }
 
     #[test]
+    fn reports_cursor_and_device_status_without_printing_responses() {
+        let (mut parser, mut buffer) = make_parser_and_buf(20, 10);
+        parser.feed_bytes(&mut buffer, b"\x1b[4;7H\x1b[");
+        parser.feed_bytes(&mut buffer, b"6n\x1b[5n\x1b[c\x1b[>c");
+        assert_eq!(
+            parser.take_responses(),
+            b"\x1b[4;7R\x1b[0n\x1b[?1;2c\x1b[>0;1;0c"
+        );
+        assert!(parser.take_responses().is_empty());
+        assert!(buffer.line_text(3).unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn origin_mode_positions_and_reports_relative_to_margins() {
+        let (mut parser, mut buffer) = make_parser_and_buf(20, 10);
+        parser.feed_str(&mut buffer, "\x1b[3;7r\x1b[?6h\x1b[2;4H\x1b[6n");
+        assert_eq!(buffer.cursor().row, 3);
+        assert_eq!(parser.take_responses(), b"\x1b[2;4R");
+        parser.feed_str(&mut buffer, "\x1b[99B");
+        assert_eq!(buffer.cursor().row, 6);
+        parser.feed_str(&mut buffer, "\x1b[99A");
+        assert_eq!(buffer.cursor().row, 2);
+        parser.feed_str(&mut buffer, "\x1b[?6l");
+        assert_eq!(buffer.cursor().row, 0);
+    }
+
+    #[test]
+    fn input_modes_and_auto_wrap_reset_with_terminal_state() {
+        let (mut parser, mut buffer) = make_parser_and_buf(4, 2);
+        parser.feed_str(&mut buffer, "\x1b[?1;2004h\x1b[?7lABCDE");
+        assert!(buffer.modes().application_cursor_keys);
+        assert!(buffer.modes().bracketed_paste);
+        assert_eq!(buffer.line_text(0).unwrap(), "ABCE");
+        assert_eq!(buffer.cursor().row, 0);
+        parser.feed_str(&mut buffer, "\x1bc");
+        assert_eq!(buffer.modes(), crate::TerminalModes::default());
+    }
+
+    #[test]
+    fn line_feed_and_index_preserve_columns_unless_newline_mode_is_set() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 5);
+        parser.feed_str(&mut buffer, "ab\nX");
+        assert_eq!(buffer.line_text(1).unwrap(), "  X       ");
+        parser.feed_str(&mut buffer, "\x1bDX");
+        assert_eq!(buffer.line_text(2).unwrap(), "   X      ");
+        parser.feed_str(&mut buffer, "\x1b[20h\nX");
+        assert_eq!(buffer.line_text(3).unwrap(), "X         ");
+        parser.feed_str(&mut buffer, "\x1bMX");
+        assert_eq!(buffer.cursor().row, 2);
+        assert_eq!(buffer.line_text(2).unwrap(), " X X      ");
+    }
+
+    #[test]
+    fn alternate_screen_does_not_pollute_history_and_survives_resize() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 3);
+        parser.feed_str(&mut buffer, "main\x1b[2;4H\x1b[?1049h");
+        parser.feed_str(&mut buffer, &"alt\r\n".repeat(50));
+        assert_eq!(buffer.scrollback_len(), 0);
+        parser.feed_str(&mut buffer, "\x1b[3;8H\x1b7");
+        buffer.resize(TerminalSize::new(6, 2));
+        parser.feed_str(&mut buffer, "\x1b[?1049l");
+        assert_eq!(buffer.line_text(0).unwrap(), "main  ");
+        assert_eq!(buffer.cursor().row, 1);
+        assert_eq!(buffer.cursor().col, 3);
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.lines.len(), 2);
+        assert!(snapshot.lines.iter().all(|line| line.len() == 6));
+    }
+
+    #[test]
+    fn erase_saved_lines_preserves_visible_screen() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 2);
+        parser.feed_str(&mut buffer, "one\r\ntwo\r\nthree");
+        assert!(buffer.scrollback_len() > 0);
+        let visible = buffer.snapshot().lines;
+        parser.feed_str(&mut buffer, "\x1b[3J");
+        assert_eq!(buffer.scrollback_len(), 0);
+        assert_eq!(buffer.snapshot().lines, visible);
+    }
+
+    #[test]
+    fn response_queue_is_bounded_and_unsupported_control_strings_are_hidden() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 2);
+        parser.feed_str(&mut buffer, &"\x1b[6n".repeat(5000));
+        assert!(parser.take_responses().len() <= MAX_RESPONSE_BYTES);
+        parser.feed_str(&mut buffer, "\x1bPgarbage\x1b\\OK\x1b_hidden\x1b\\");
+        assert_eq!(buffer.line_text(0).unwrap().trim_end(), "OK");
+    }
+
+    #[test]
     fn parses_clear_screen() {
         let (mut p, mut buf) = make_parser_and_buf(10, 3);
         p.feed_str(&mut buf, "hello\u{1b}[2J");
         // ED 2 会擦除屏幕，但不移动光标。
         assert!(buf.line_text(0).unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn erase_characters_preserves_the_rest_of_the_line_and_cursor() {
+        for (sequence, expected) in [
+            ("\x1b[2X", "AB  EFGH  "),
+            ("\x1b[X", "AB DEFGH  "),
+            ("\x1b[0X", "AB DEFGH  "),
+            ("\x1b[65535X", "AB        "),
+        ] {
+            let (mut parser, mut buffer) = make_parser_and_buf(10, 2);
+            parser.feed_str(&mut buffer, "ABCDEFGH\x1b[1;3H\x1b[42m");
+            let cursor = buffer.cursor();
+            buffer.clear_dirty();
+            parser.feed_str(&mut buffer, sequence);
+            assert_eq!(buffer.line_text(0).unwrap(), expected);
+            assert_eq!(buffer.cursor(), cursor);
+            assert_eq!(buffer.dirty_lines(), vec![0]);
+            assert_eq!(buffer.snapshot().lines[0][2].attrs.bg, Color::Indexed(2));
+        }
+    }
+
+    #[test]
+    fn erasing_either_half_of_a_wide_glyph_clears_the_whole_glyph() {
+        for column in [2, 3] {
+            let (mut parser, mut buffer) = make_parser_and_buf(8, 2);
+            parser.feed_str(&mut buffer, &format!("A中BC\x1b[1;{column}H\x1b[X"));
+            assert_eq!(buffer.line_text(0).unwrap(), "A  BC   ");
+        }
+    }
+
+    #[test]
+    fn tabs_move_without_erasing_text_or_wrapping_at_the_right_margin() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 2);
+        parser.feed_str(&mut buffer, "ABCDEFGHIJ\r\t");
+        assert_eq!(buffer.cursor().col, 8);
+        assert_eq!(buffer.line_text(0).unwrap(), "ABCDEFGHIJ");
+        parser.feed_str(&mut buffer, "\t\t");
+        assert_eq!(buffer.cursor().col, 9);
+        assert_eq!(buffer.cursor().row, 0);
+        assert_eq!(buffer.scrollback_len(), 0);
+
+        let (mut parser, mut buffer) = make_parser_and_buf(1, 1);
+        parser.feed_str(&mut buffer, "\tX\t");
+        assert_eq!(buffer.line_text(0).unwrap(), "X");
+        assert_eq!(buffer.scrollback_len(), 0);
+    }
+
+    #[test]
+    fn reset_preserves_the_configured_scrollback_limit() {
+        let mut parser = AnsiParser::new();
+        let mut buffer = TerminalBuffer::new(TerminalSize::new(4, 2), 3);
+        parser.feed_str(&mut buffer, "old\x1b[31m\x1bc");
+        assert!(buffer.line_text(0).unwrap().trim().is_empty());
+        assert_eq!(buffer.current_attrs().fg, Color::Default);
+        parser.feed_str(&mut buffer, &"row\r\n".repeat(20));
+        assert_eq!(buffer.scrollback_len(), 3);
+    }
+
+    #[test]
+    fn dec_private_modes_apply_every_parameter() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 3);
+        parser.feed_str(&mut buffer, "primary\x1b[?1049;25h");
+        parser.feed_str(&mut buffer, "alternate\x1b[?1049;25l");
+        assert_eq!(buffer.line_text(0).unwrap().trim_end(), "primary");
+        assert!(!buffer.cursor_state().visible);
+    }
+
+    #[test]
+    fn oversized_escape_sequences_do_not_accumulate_or_leak_into_text() {
+        let (mut parser, mut buffer) = make_parser_and_buf(10, 3);
+        parser.feed_str(&mut buffer, "\x1b]52;");
+        for _ in 0..100 {
+            parser.feed_str(&mut buffer, &"a".repeat(4096));
+        }
+        assert!(parser.buf.is_empty());
+        parser.feed_str(&mut buffer, "\x1b\\OK");
+        parser.feed_str(&mut buffer, "\x1b[");
+        for _ in 0..100 {
+            parser.feed_str(&mut buffer, &"1;".repeat(2048));
+        }
+        assert!(parser.buf.len() <= MAX_CSI_BYTES);
+        parser.feed_str(&mut buffer, "mTAIL");
+        assert_eq!(buffer.line_text(0).unwrap().trim_end(), "OKTAIL");
     }
 
     #[test]
@@ -383,7 +575,7 @@ mod tests {
     #[test]
     fn erase_display_from_cursor() {
         let (mut p, mut buf) = make_parser_and_buf(10, 4);
-        p.feed_str(&mut buf, "aaa\nbbb\nccc\nddd");
+        p.feed_str(&mut buf, "aaa\r\nbbb\r\nccc\r\nddd");
         p.feed_str(&mut buf, "\u{1b}[2;1H"); // move to row 2 col 1
         p.feed_str(&mut buf, "\u{1b}[0J"); // erase from cursor to end
         assert_eq!(buf.line_text(0).unwrap()[..3].to_string(), "aaa");

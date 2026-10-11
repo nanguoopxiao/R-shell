@@ -5,9 +5,11 @@
 //! 整个缓冲区。
 
 mod cell;
+mod input;
 mod parser;
 mod screen;
 
 pub use cell::{Attrs, AttrsFlags, Cell, Color};
+pub use input::{TerminalModes, encode_paste};
 pub use parser::AnsiParser;
 pub use screen::{Cursor, CursorState, DirtyRegion, TerminalBuffer, TerminalSnapshot};

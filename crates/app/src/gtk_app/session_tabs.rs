@@ -52,7 +52,7 @@ pub(super) fn build_session_tab_strip(language: &AppLanguage) -> SessionTabStrip
     let tabs_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::External)
         .vscrollbar_policy(PolicyType::Never)
-        .hexpand(false)
+        .hexpand(true)
         .child(&tabs_box)
         .build();
     tabs_scroll.add_css_class("session-tabs-scroll");
@@ -85,7 +85,6 @@ pub(super) fn build_session_tab_strip(language: &AppLanguage) -> SessionTabStrip
         tabs_box,
         add_button,
         dropdown_button,
-        width_cap: Rc::new(RefCell::new(None)),
     }
 }
 
@@ -302,10 +301,6 @@ pub(super) fn session_tab_effective_available_width(
 
 pub(super) fn sync_session_tab_strip_layout(state: &AppState) {
     let current_strip_width = state.session_tab_strip.container.allocated_width();
-    if state.notebook.n_pages() == 0 && current_strip_width > 0 {
-        *state.session_tab_strip.width_cap.borrow_mut() = Some(current_strip_width);
-        capture_window_size_cap(state);
-    }
 
     let tab_count = state.notebook.n_pages() as i32;
     let controls_width = session_tab_controls_width(state);
@@ -336,16 +331,13 @@ pub(super) fn sync_session_tab_strip_layout(state: &AppState) {
         .session_tab_strip
         .tabs_scroll
         .set_visible(tab_count > 0);
+    state.session_tab_strip.tabs_scroll.set_hexpand(true);
     state
         .session_tab_strip
         .tabs_scroll
-        .set_hexpand(tabs_overflow);
-    state
-        .session_tab_strip
-        .tabs_scroll
-        .set_size_request(scroll_width, -1);
-
-    clamp_window_size_to_cap(state);
+        // A viewport request becomes the header's minimum width and prevents the
+        // window from shrinking. Let GTK allocate it; overflow stays scrollable.
+        .set_size_request(0, -1);
 }
 
 pub(super) fn schedule_session_tab_reveal(
@@ -416,24 +408,12 @@ pub(super) fn session_tab_is_compact(target_tab_width: i32) -> bool {
     target_tab_width <= 72
 }
 
-pub(super) fn clamp_window_size_to_cap(state: &AppState) {
-    let Some((cap_width, cap_height)) = *state.window_size_cap.borrow() else {
-        return;
-    };
-
-    let current_width = state.window.allocated_width();
-    let current_height = state.window.allocated_height();
-    if current_width <= cap_width && current_height <= cap_height {
-        return;
-    }
-
-    state.window.set_default_size(cap_width, cap_height);
-}
-
 pub(super) fn activate_session_page(state: &AppState, widget: &Widget) {
     if let Some(page_num) = state.notebook.page_num(widget) {
         state.notebook.set_current_page(Some(page_num));
     }
+    // Appending the first page may emit switch-page before its metadata exists.
+    update_workbench_context(state, Some(widget));
     sync_workspace_state(state);
     sync_session_tab_strip(state, Some(widget));
     schedule_session_tab_strip_resync(state);

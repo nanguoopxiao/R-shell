@@ -22,6 +22,21 @@ The project is still in the MVP stage, but it already has a runnable Windows GTK
 - Built-in command environment: Windows packages can include `bash`, `curl`, `wget`, `ssh`, `telnet`, and related utilities.
 - Connection storage: saved FTP/SFTP/SSH passwords can be stored securely on Windows and mirrored into an encrypted local vault.
 - CPU-first rendering: the terminal core is independent from GTK, and hot render paths prefer visible-slice access over full-buffer copies.
+- Terminal input: GTK input-method commits and composition previews, application cursor keys, modified function keys, and cursor/device-status query replies.
+- Clipboard and history: `Ctrl+Shift+C/V` copies/pastes; bracketed-paste markers are added when requested by the running program, with control characters filtered. `Shift+PageUp/PageDown` browses history; incoming output preserves the viewport and typing returns to the bottom.
+- Recursive transfer checks reject escaping paths, unsafe filenames, symbolic links within a transfer, and copying a directory into itself or its descendants. Directory nesting is limited to 128 levels.
+
+## Compact Workbench
+
+The title bar and session tabs share one row. Search saved sessions by name, host, username, or group; set the optional group when creating or editing a session. Remote files live in a collapsible bottom panel. Panel visibility and sizes are saved on exit. Focus mode hides both panels temporarily and restores the previous layout when toggled again.
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+Shift+B` | Toggle the session sidebar |
+| `Ctrl+Shift+E` | Toggle remote files |
+| `Ctrl+Shift+F` | Toggle focus mode |
+| `Ctrl+Shift+K` | Search saved sessions |
+| `Ctrl+Shift+N` | Create a connection |
 
 ## Download And Run
 
@@ -169,6 +184,7 @@ under `crates/app/src/gtk_app/`: `session_tabs.rs` owns the custom tab strip,
 ## Security Notes
 
 - SSH terminal authentication is delegated to an OpenSSH client by default, keeping password and private-key passphrase prompts inside the PTY interaction stream.
+- SSH terminals explicitly use `.ssh/known_hosts` in the user's home directory so system and bundled OpenSSH share trusted keys with embedded SFTP and monitoring. Embedded connections verify the key before sending credentials. On first use, connect through the SSH terminal, verify the server fingerprint and save its key, then retry. Unknown, changed or unverifiable keys are rejected. Embedded connections do not currently resolve custom `UserKnownHostsFile` settings or support files containing `@cert-authority` / `@revoked` markers.
 - Saved connection passwords are managed through system credential support and a local encrypted vault; they should not be written to plaintext config files.
 - The built-in command environment is a user-space toolchain bundled with the app and does not modify the global system environment.
 

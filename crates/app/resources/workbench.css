@@ -1,0 +1,875 @@
+* {
+    color: #d7dce2;
+}
+button, combobox, combobox button, listbox row, entry, checkbutton {
+    outline: none;
+    outline-offset: 0;
+}
+button, entry, combobox button, listbox row, .session-tab-item, .sidebar-nav-button,
+.toolbar-icon-button, .sftp-toolbar-button, .profile-actions-button, popover > contents,
+.settings-page, .settings-card, .new-session-form, .dialog-content,
+.protocol-page, notebook, notebook > stack, stack, .empty-workspace, .app-status-bar {
+    transition-property: background-color, border-color, color, opacity, box-shadow;
+    transition-duration: 180ms;
+    transition-timing-function: ease-out;
+}
+notebook.page-switching > stack {
+    opacity: 0.94;
+}
+window, window.background, .app-window, .app-root, .content-panel, .session-sidebar,
+.sidebar-scroll, .sidebar-scroll viewport, .sidebar-scroll overshoot, .sidebar-scroll undershoot,
+listbox, listbox.view, .profiles-list, .profiles-list viewport, .profiles-list.view,
+scrolledwindow, scrolledwindow viewport, viewport, .app-status-bar,
+notebook, notebook > stack, textview, textview text {
+    background: #0c1014;
+    background-color: #0c1014;
+    color: #d7dce2;
+}
+headerbar, .app-header, .app-header windowhandle {
+    background: #0d1218;
+    background-color: #0d1218;
+    color: #d7dce2;
+    border-bottom: 1px solid #242a30;
+}
+popover > contents, .app-menu-popover > contents {
+    background-color: #151b22;
+    color: #d7dce2;
+    border: 1px solid #33404d;
+    border-radius: 12px;
+    padding: 6px;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+listbox row, listbox row box, listbox row label, .session-sidebar label, .content-panel label {
+    color: #d7dce2;
+    background-color: transparent;
+}
+button, menubutton > button, combobox button, combobox box button {
+    background: #1a222b;
+    background-color: #1a222b;
+    background-image: none;
+    color: #d7dce2;
+    border: 1px solid #303d49;
+    border-radius: 8px;
+    box-shadow: none;
+    padding: 5px 10px;
+}
+button:hover, menubutton > button:hover, combobox button:hover {
+    background: #24303b;
+    background-color: #24303b;
+    border-color: #415267;
+}
+button:active, button:checked, menubutton > button:active, combobox button:active {
+    background: #2d4052;
+    background-color: #2d4052;
+    border-color: #4d6680;
+}
+.profile-actions-button {
+    min-width: 150px;
+    padding: 8px 12px;
+    border-color: transparent;
+    background: transparent;
+    background-color: transparent;
+    border-radius: 8px;
+}
+.profile-actions-button:hover {
+    background: #24303b;
+    background-color: #24303b;
+    border-color: #33465a;
+}
+.context-menu-list {
+    padding: 0;
+    background: transparent;
+    background-color: transparent;
+}
+.context-menu-button,
+.context-menu-button:hover,
+.context-menu-button:active,
+.context-menu-button:checked,
+.context-menu-button:disabled {
+    margin: 0;
+    border-radius: 8px;
+    box-shadow: none;
+    background-image: none;
+}
+.context-menu-button:disabled {
+    opacity: 0.42;
+}
+.profile-sftp-button {
+    min-width: 34px;
+    min-height: 34px;
+    padding: 4px;
+    border-radius: 6px;
+    border-color: transparent;
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+}
+.profile-sftp-button:hover {
+    background-color: #203247;
+    border-color: #34506c;
+}
+.profile-sftp-button:disabled {
+    opacity: 0.35;
+}
+.sftp-toolbar-button {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+    border-radius: 6px;
+    border-color: transparent;
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+}
+.sftp-toolbar-button:hover {
+    background-color: #203247;
+    border-color: #34506c;
+}
+.password-reveal-button,
+.password-reveal-button:hover,
+.password-reveal-button:active,
+.password-reveal-button:checked {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    border-radius: 6px;
+    border-color: #303842;
+    background: #11161b;
+    background-color: #11161b;
+    background-image: none;
+    box-shadow: none;
+}
+.password-reveal-button:hover {
+    background-color: #17212b;
+    border-color: #405267;
+}
+.sftp-header-row {
+    padding: 4px 0;
+    border-bottom: 1px solid #242a30;
+}
+.sftp-header-label {
+    color: #f0f3f6;
+    font-weight: 700;
+}
+.sftp-name-column {
+    font-weight: 600;
+}
+.sftp-metadata-column {
+    color: #c8cfd8;
+}
+button label {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+button.flat, button.flat:hover, button.flat:active, button.flat:checked,
+.tab-close-button, .tab-close-button:hover, .tab-close-button:active, .tab-close-button:checked {
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0 4px;
+}
+.tab-close-button:hover {
+    color: #f5f7fa;
+    background-color: #26303a;
+    border-radius: 4px;
+}
+.toolbar-button {
+    min-width: 68px;
+}
+.toolbar-icon-button,
+.toolbar-icon-button:hover,
+.toolbar-icon-button:active,
+.toolbar-icon-button:checked {
+    min-width: 36px;
+    min-height: 34px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+}
+.toolbar-icon-button image {
+    margin: 0;
+    padding: 0;
+}
+.toolbar-icon-button:hover {
+    background-color: #172330;
+    border-color: #263545;
+}
+.toolbar-icon-button:active,
+.toolbar-icon-button:checked {
+    background-color: #203247;
+    border-color: #34506c;
+}
+headerbar windowcontrols,
+headerbar windowcontrols box,
+headerbar windowcontrols image {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+headerbar windowcontrols button,
+headerbar windowcontrols button:hover,
+headerbar windowcontrols button:active,
+headerbar windowcontrols button:checked {
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    outline: none;
+    padding: 6px 10px;
+}
+headerbar windowcontrols button:hover {
+    background-color: #26303a;
+}
+headerbar windowcontrols button.close:hover {
+    background-color: #b13a3a;
+    color: #f5f7fa;
+}
+entry, entry:focus, textview, textview text {
+    background: #11161b;
+    background-color: #11161b;
+    color: #d7dce2;
+    border: 1px solid #303842;
+    border-radius: 6px;
+}
+entry text,
+entry image,
+textview text {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+combobox,
+combobox:hover,
+combobox:focus,
+combobox box {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    border-image: none;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    padding: 0;
+    margin: 0;
+    transform: none;
+}
+combobox button,
+combobox button:focus,
+combobox button:hover,
+combobox button:active,
+combobox button:checked {
+    background: #11161b;
+    background-color: #11161b;
+    background-image: none;
+    color: #d7dce2;
+    border: 1px solid #303842;
+    border-image: none;
+    border-radius: 6px;
+    box-shadow: none;
+    min-height: 36px;
+    padding: 0 10px;
+    margin: 0;
+    outline-style: none;
+    outline-width: 0;
+    outline-offset: 0;
+    text-shadow: none;
+    -gtk-icon-shadow: none;
+    transition: none;
+    transform: none;
+}
+combobox button:hover,
+combobox button:focus,
+combobox button:checked {
+    border-color: #303842;
+}
+combobox button box,
+combobox button cellview,
+combobox button label,
+combobox button image,
+combobox arrow {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    border-image: none;
+    box-shadow: none;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    outline-style: none;
+    outline-width: 0;
+    text-shadow: none;
+    -gtk-icon-shadow: none;
+    transform: none;
+    transition: none;
+}
+combobox button box {
+    border-spacing: 0;
+}
+combobox arrow {
+    min-width: 18px;
+}
+.stable-combo,
+.stable-combo:hover,
+.stable-combo:focus,
+.stable-combo > box,
+.stable-combo > box:hover {
+    min-height: 36px;
+    padding: 0;
+    margin: 0;
+    border: 0 solid transparent;
+    border-image: none;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    transform: none;
+    transition: none;
+}
+.stable-combo button,
+.stable-combo button:hover,
+.stable-combo button:focus,
+.stable-combo button:active,
+.stable-combo button:checked {
+    min-height: 36px;
+    padding: 0 10px;
+    margin: 0;
+    border-width: 1px;
+    border-style: solid;
+    border-color: #303842;
+    border-image: none;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    outline-offset: 0;
+    transform: none;
+    transition: none;
+}
+.stable-combo cellview,
+.stable-combo cellview:hover,
+.stable-combo label,
+.stable-combo label:hover,
+.stable-combo arrow,
+.stable-combo arrow:hover {
+    margin: 0;
+    padding: 0;
+    border: 0 solid transparent;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    text-shadow: none;
+    -gtk-icon-shadow: none;
+    transform: none;
+    transition: none;
+}
+.stable-dropdown,
+.stable-dropdown:hover,
+.stable-dropdown:focus,
+.stable-dropdown:active,
+.stable-dropdown:checked {
+    min-height: 36px;
+    padding: 0 10px;
+    margin: 0;
+    background: #11161b;
+    background-color: #11161b;
+    background-image: none;
+    border: 1px solid #303842;
+    border-radius: 6px;
+    border-image: none;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    outline-offset: 0;
+    transform: none;
+    transition: none;
+}
+.stable-dropdown:hover,
+.stable-dropdown:focus,
+.stable-dropdown:checked {
+    border-color: #405267;
+    background-color: #17212b;
+}
+.stable-dropdown label,
+.stable-dropdown image {
+    margin: 0;
+    padding: 0;
+    border: 0 solid transparent;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    text-shadow: none;
+    -gtk-icon-shadow: none;
+    transform: none;
+    transition: none;
+}
+.stable-dropdown-option,
+.stable-dropdown-option:hover,
+.stable-dropdown-option:focus,
+.stable-dropdown-option:active,
+.stable-dropdown-option:checked,
+.stable-dropdown-option.hover {
+    background: transparent;
+    background-color: transparent;
+    background-image: none;
+    color: #d7dce2;
+    min-height: 34px;
+    min-width: 220px;
+    padding: 0 10px;
+    margin: 0;
+    border: 0 solid transparent;
+    border-radius: 6px;
+    border-image: none;
+    box-shadow: none;
+    outline-style: none;
+    outline-width: 0;
+    transform: none;
+    transition: none;
+}
+.stable-dropdown-option:hover,
+.stable-dropdown-option:focus,
+.stable-dropdown-option.hover {
+    background: #24303b;
+    background-color: #24303b;
+}
+.stable-dropdown-option label,
+.stable-dropdown-option.hover label,
+.stable-dropdown-option:hover label {
+    background: transparent;
+    background-color: transparent;
+    color: #d7dce2;
+    margin: 0;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    text-shadow: none;
+    transform: none;
+    transition: none;
+}
+combobox popover > contents,
+combobox popover listbox,
+combobox popover listbox row,
+combobox popover modelbutton,
+combobox popover button {
+    margin: 0;
+    border: 0 solid transparent;
+    box-shadow: none;
+    transform: none;
+    transition: none;
+}
+combobox popover listbox row,
+combobox popover listbox row:hover,
+combobox popover modelbutton,
+combobox popover modelbutton:hover {
+    padding: 6px 10px;
+}
+entry selection, text selection, textview selection {
+    background-color: #35506b;
+    color: #f5f7fa;
+}
+label, checkbutton, checkbutton label {
+    color: #d7dce2;
+}
+notebook > header, notebook > header tabs {
+    background-color: #0f1419;
+    border-bottom: 1px solid #242a30;
+}
+notebook tab, stackswitcher button {
+    background-color: #161c22;
+    color: #cfd6de;
+    border: 1px solid #2b333c;
+    border-radius: 6px;
+}
+notebook tab:checked, stackswitcher button:checked {
+    background-color: #243344;
+}
+.session-tab-strip {
+    background-color: #0f1419;
+    border-bottom: 1px solid #242a30;
+    padding: 6px 10px;
+}
+.empty-workspace {
+    color: #d7dce2;
+    padding: 28px;
+    opacity: 1;
+}
+.empty-workspace-icon {
+    color: #5f6c78;
+    opacity: 0.78;
+    margin-bottom: 2px;
+}
+.empty-workspace-title {
+    color: #eef3f8;
+    font-size: 1.18em;
+    font-weight: 700;
+}
+.empty-workspace-subtitle {
+    color: #8e98a4;
+    font-size: 0.92em;
+}
+.empty-workspace-actions {
+    margin-top: 4px;
+}
+.empty-primary-action {
+    background-color: #1f74d2;
+    border-color: #2582ea;
+    color: #f6fbff;
+    min-height: 36px;
+    padding: 0 16px;
+}
+.empty-primary-action:hover {
+    background-color: #2682ea;
+    border-color: #3890f5;
+}
+.empty-primary-action:active {
+    background-color: #1765bc;
+    border-color: #2478db;
+}
+.empty-secondary-action {
+    min-height: 36px;
+    padding: 0 14px;
+}
+.dialog-content {
+    background-color: #0c1014;
+    padding: 16px;
+}
+.dialog-title,
+.settings-page-title {
+    color: #eef3f8;
+    font-size: 1.2em;
+    font-weight: 700;
+}
+.dialog-subtitle,
+.settings-page-subtitle {
+    color: #8e98a4;
+    font-size: 0.9em;
+}
+.dialog-actions,
+.settings-actions {
+    margin-top: 4px;
+}
+.new-session-form {
+    background-color: #10161d;
+    border: 1px solid #263341;
+    border-radius: 10px;
+    padding: 12px;
+}
+.protocol-switcher {
+    margin-bottom: 8px;
+}
+.protocol-switcher button {
+    min-height: 34px;
+}
+.protocol-page {
+    background-color: transparent;
+    padding: 2px;
+}
+.form-grid {
+    margin-top: 4px;
+}
+.form-label {
+    color: #b9c0c9;
+    font-weight: 600;
+}
+.settings-page {
+    background-color: #0c1014;
+    padding: 26px;
+}
+.settings-page-content {
+    min-width: 680px;
+    padding: 0;
+}
+.settings-card {
+    background-color: #10161d;
+    border: 1px solid #263341;
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.settings-card-title {
+    color: #eef3f8;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.settings-expander {
+    background-color: #10161d;
+    border: 1px solid #263341;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+.settings-expander > title {
+    padding: 4px 0;
+}
+.session-tab-controls {
+    border: 1px solid #2b333c;
+    border-radius: 8px;
+}
+.session-strip-button,
+.session-strip-button:hover,
+.session-strip-button:active,
+.session-strip-button:checked {
+    min-width: 36px;
+    min-height: 36px;
+    border: none;
+    border-radius: 0;
+    background: #1b2026;
+    background-color: #1b2026;
+    padding: 0;
+}
+.session-strip-button + .session-strip-button {
+    border-left: 1px solid #2b333c;
+}
+.session-tabs-scroll, .session-tabs-scroll viewport {
+    background: transparent;
+    background-color: transparent;
+}
+.session-tabs-box {
+    padding-left: 4px;
+}
+.session-tab-item {
+    background-color: #161c22;
+    border: 1px solid #2b333c;
+    border-radius: 8px;
+    padding: 0 4px 0 8px;
+    box-shadow: none;
+}
+.session-tab-item.compact {
+    padding: 0 2px 0 4px;
+}
+.session-tab-item.active {
+    background-color: #22354a;
+    border-color: #3e6d9f;
+    box-shadow: inset 0 -2px 0 #2d8cff;
+}
+.session-tab-button,
+.session-tab-button:hover,
+.session-tab-button:active,
+.session-tab-button:checked {
+    border: none;
+    background: transparent;
+    background-color: transparent;
+    box-shadow: none;
+    padding: 8px 6px;
+}
+paned > separator {
+    background-color: #242a30;
+    min-width: 1px;
+    min-height: 1px;
+    padding: 0;
+    margin: 0;
+}
+.session-sidebar {
+    background: #0e1114;
+    background-color: #0e1114;
+    border-right: 1px solid #242a30;
+}
+.sidebar-nav {
+    min-width: 48px;
+}
+.sidebar-nav-button,
+.sidebar-nav-button:hover,
+.sidebar-nav-button:active,
+.sidebar-nav-button:checked {
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    box-shadow: none;
+    font-size: 1.18em;
+}
+.sidebar-nav-button image {
+    margin: 0;
+    padding: 0;
+}
+.sidebar-nav-button:hover {
+    background-color: #172330;
+    border-color: transparent;
+}
+.sidebar-nav-button.active,
+.sidebar-nav-button.active:hover {
+    background-color: #1c3d5f;
+    border-color: #275b8d;
+    color: #eef3f8;
+}
+.sidebar-panel {
+    min-width: 0;
+}
+.sidebar-panel-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.sftp-search {
+    margin-bottom: 2px;
+}
+.sftp-path {
+    color: #aeb7c1;
+    padding: 2px 2px 6px 2px;
+}
+.sftp-status {
+    color: #aeb7c1;
+    font-size: 0.9em;
+}
+.sidebar-scroll, .sidebar-scroll viewport, .profiles-list {
+    background: #0f1419;
+    background-color: #0f1419;
+}
+.profiles-list row {
+    border-radius: 8px;
+    margin: 2px 0;
+}
+.profiles-list row:selected {
+    background-color: #1f3f5f;
+}
+.profiles-list row:hover {
+    background-color: #172330;
+}
+.sftp-entry-row {
+    padding: 0;
+}
+.sftp-entry-row-compact {
+    min-width: 0;
+}
+.sftp-entry-icon {
+    color: #7ab3ff;
+}
+.sftp-file-row .sftp-entry-icon {
+    color: #8b97a3;
+}
+.sftp-entry-detail {
+    font-size: 0.85em;
+}
+.app-status-bar {
+    background-color: #0e1114;
+    border-top: 1px solid #242a30;
+    padding: 0 10px;
+    min-height: 34px;
+}
+.host-info {
+    color: #b9c0c9;
+    padding: 0;
+}
+
+/* Compact native workbench. Terminal content stays visually dominant. */
+window.app-window { background: #111418; color: #dce1e8; }
+.app-root, .content-panel { background: #111418; }
+headerbar.app-header, .app-header windowhandle {
+    min-height: 44px;
+    padding: 0 6px;
+    background: #1a1e23;
+    border-bottom: 1px solid #2b3139;
+    box-shadow: none;
+}
+.workbench-brand { padding: 0 6px; }
+.workbench-brand-name { font-weight: 500; color: #dce1e8; }
+.workbench-sidebar {
+    background: #171b20;
+    padding: 8px 10px;
+    border-right: 1px solid #2b3139;
+}
+.workbench-sidebar-heading { padding: 0 2px; }
+.workbench-sidebar-heading label { font-weight: 500; }
+.workbench-sidebar .sidebar-scroll, .workbench-sidebar .profiles-list,
+.workbench-sidebar .sidebar-scroll viewport { background: #171b20; }
+.workbench-search { min-height: 28px; padding: 2px 7px; border-radius: 4px; }
+.workbench-empty-profiles { color: #9aa4b1; padding: 14px 4px; font-size: 12px; }
+.workbench-sidebar .profiles-list row { margin: 1px 0; border-radius: 4px; }
+.workbench-sidebar .profiles-list row:hover { background: #222a30; }
+.workbench-sidebar .profiles-list row:selected { background: #243b33; }
+.saved-profile-row { padding: 8px 7px; }
+.profile-name { color: #dce1e8; font-weight: 500; }
+.profile-detail { color: #99a3af; font-size: 11px; }
+.profile-protocol-icon { color: #8c98a5; }
+.workbench-sidebar .profile-group-row,
+.workbench-sidebar .profile-group-row:hover,
+.workbench-sidebar .profile-group-row:selected {
+    background: transparent; border: none; border-radius: 0;
+    padding: 17px 7px 6px;
+}
+.profile-group-row label { color: #929eaa; font-size: 11px; font-weight: 500; }
+.app-header .session-tab-strip { background: transparent; padding: 0; border: none; }
+.app-header .session-tabs-box { padding-left: 0; }
+.app-header .session-tab-item {
+    background: #1a1e23; border: none; border-top: 2px solid transparent;
+    border-right: 1px solid #2b3139; border-radius: 0; padding: 0 4px 0 8px;
+    box-shadow: none;
+}
+.app-header .session-tab-item.active {
+    background: #111418; border-top-color: #75b89e; box-shadow: none;
+}
+.app-header .session-tab-button { padding: 7px 5px; color: #9aa4b1; }
+.app-header .session-tab-item.active .session-tab-button { color: #e3e8ee; }
+.app-header .session-strip-button { background: transparent; min-width: 30px; min-height: 32px; }
+.app-header .session-strip-button + .session-strip-button { border: none; }
+.app-header .session-strip-button:hover { background: #272e36; }
+.app-header .session-tab-controls { border: none; border-radius: 0; }
+.workbench-context {
+    background: #111418; border-bottom: 1px solid #262d35;
+    padding: 4px 12px; min-height: 32px;
+}
+.workbench-context .workbench-protocol { color: #8fc4ae; font-size: 11px; padding: 2px 5px; }
+.workbench-context .workbench-session-name { color: #dce1e8; font-weight: 500; }
+.workbench-context .workbench-session-detail { color: #909ca9; font-size: 12px; }
+.workbench-action {
+    background: transparent; border: 1px solid transparent; border-radius: 4px;
+    min-height: 28px; padding: 2px 8px; box-shadow: none;
+}
+.workbench-action:hover { background: #222a30; }
+.workbench-action.active { background: #243b33; border-color: transparent; }
+.toolbar-icon-button { min-width: 30px; min-height: 30px; border-radius: 4px; }
+.toolbar-icon-button:hover { background: #252c33; border-color: transparent; }
+.toolbar-icon-button.active { background: #243b33; border-color: transparent; }
+.app-status-bar {
+    background: #171b20; border-top: 1px solid #2b3139;
+    min-height: 24px; padding: 2px 12px;
+}
+.app-status-bar label { color: #9aa4b1; font-size: 11px; }
+.workbench-files { background: #14191f; border-top: 1px solid #2b3139; padding: 6px 12px; }
+.workbench-files .sidebar-panel-title { color: #ccd4dc; font-size: 12px; font-weight: 500; }
+.workbench-files .sftp-path { color: #8f9da9; font-size: 12px; padding: 0; }
+.workbench-files .sftp-search { min-height: 26px; padding: 1px 6px; margin: 0; }
+.workbench-files .sidebar-scroll, .workbench-files .sidebar-scroll viewport,
+.workbench-files .sftp-list { background: #14191f; }
+.workbench-files .sftp-header-row { border-bottom: 1px solid #262d35; padding: 2px 0; }
+.workbench-files .sftp-header-label { font-weight: 400; color: #94a0ad; font-size: 11px; }
+.workbench-files .sftp-name-column { font-weight: 400; }
+.workbench-files .sftp-list row { border-radius: 3px; margin: 0; }
+.workbench-files .sftp-list row:selected { background: #243b33; }
+.workbench-files .sftp-entry-icon { color: #97b4ac; }
+.workbench-files .sftp-toolbar-button { min-width: 28px; min-height: 28px; padding: 2px; }
+.workbench-files .sftp-status { font-size: 11px; color: #94a0ad; }
+.empty-workspace { padding: 22px; }
+.empty-workspace-icon { color: #71827e; }
+.empty-workspace-title { font-size: 18px; font-weight: 500; }
+.empty-workspace-subtitle { color: #96a2ae; font-size: 13px; }
+.empty-primary-action { background: #315c4c; border-color: #3f7460; color: #eef7f2; border-radius: 5px; }
+.empty-primary-action:hover { background: #3c6c59; border-color: #538970; }
+.empty-primary-action:active { background: #315c4c; border-color: #3f7460; }
+.empty-secondary-action { border-radius: 5px; }
+.dialog-title, .settings-page-title, .settings-card-title { font-weight: 500; }
+.new-session-form, .settings-card { border-radius: 6px; }
+.app-window button:focus-visible { outline: 1px solid #75b89e; outline-offset: -1px; }
+.app-window entry:focus-within { border-color: #75b89e; }
+.status-label {
+    color: #8e98a4;
+    padding: 0;
+}
+.dim-label {
+    color: #8e98a4;
+    font-size: 0.88em;
+}

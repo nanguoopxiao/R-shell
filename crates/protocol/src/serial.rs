@@ -10,6 +10,8 @@ use std::time::Duration;
 use serialport::SerialPort;
 use shell_core::{ProtocolEvent, Result, ShellError};
 
+use crate::output::{OutputSender, output_channel};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialConfig {
     pub port_name: String,
@@ -58,7 +60,7 @@ impl SerialConnection {
             .map_err(|err| ShellError::Protocol(err.to_string()))?;
         let port = Arc::new(Mutex::new(port));
         let shutdown_requested = Arc::new(AtomicBool::new(false));
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = output_channel(Arc::clone(&shutdown_requested));
         let shutdown_for_reader = Arc::clone(&shutdown_requested);
 
         let reader_thread = thread::Builder::new()
@@ -107,7 +109,7 @@ pub fn available_serial_ports() -> Result<Vec<String>> {
 
 fn read_loop(
     mut reader: Box<dyn SerialPort>,
-    sender: mpsc::Sender<ProtocolEvent>,
+    sender: OutputSender,
     shutdown_requested: Arc<AtomicBool>,
 ) {
     let mut buffer = [0_u8; 4096];

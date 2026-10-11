@@ -1173,6 +1173,8 @@ name = "shell-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "dirs-next",
  "serialport",
  "shell-core",
  "shell-platform",

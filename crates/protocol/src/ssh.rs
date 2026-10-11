@@ -1,13 +1,13 @@
 use std::io::Read;
-use std::net::TcpStream;
+use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::Context;
 use shell_core::{ProtocolEvent, Result, ShellError, TerminalSize};
 use shell_platform::{PtyConfig, PtyLaunchOptions};
-use ssh2::Session;
 
 use crate::pty_connection::PtyConnection;
+use crate::ssh_transport::known_hosts_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshConfig {
@@ -70,6 +70,13 @@ impl SshConfig {
             args.push(identity_file.to_string());
         }
 
+        // Bundled MSYS2 OpenSSH otherwise uses /home/<user>, while native
+        // OpenSSH and embedded SFTP use the Windows profile directory.
+        if let Ok(path) = known_hosts_path() {
+            args.push("-o".to_string());
+            args.push(known_hosts_option(&path));
+        }
+
         args.extend(self.extra_args.iter().cloned());
         args.push(self.target());
         args
@@ -120,6 +127,22 @@ impl SshConnection {
         // SSH 终端会话有意使用 PTY 承载的系统进程，而不是原生 libssh2 通道。
         // 这样能保留交互行为，并让凭据提示留在终端数据流中。
         config.validate()?;
+        let path = known_hosts_path().map_err(|err| ShellError::InvalidConfig(err.to_string()))?;
+        if let Some(parent) = path.parent() {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(parent).map_err(|err| {
+                ShellError::Platform(format!(
+                    "Cannot create SSH known-hosts directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
         let pty_config = PtyConfig {
             program: config
                 .client_program
@@ -152,13 +175,17 @@ impl SshConnection {
     }
 }
 
+fn known_hosts_option(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
+    // OpenSSH parses -o arguments as config-file lines, so spaces need quotes
+    // even though this entire value is already passed as one process argument.
+    format!("UserKnownHostsFile=\"{}\"", path.replace('"', "\\\""))
+}
+
 pub fn fetch_ssh_host_stats(config: &HostStatsConfig) -> anyhow::Result<HostStats> {
-    let address = format!("{}:{}", config.host, config.port);
-    let stream =
-        TcpStream::connect(&address).with_context(|| format!("connecting to {address}"))?;
-    let mut session = Session::new().context("creating SSH stats session")?;
-    session.set_tcp_stream(stream);
-    session.handshake().context("SSH stats handshake")?;
+    let session = crate::ssh_transport::connect_verified(&config.host, config.port)?;
     session
         .userauth_password(&config.username, &config.password)
         .context("SSH stats password authentication")?;
@@ -279,6 +306,16 @@ mod tests {
         assert!(args.contains(&"2222".to_string()));
         assert!(args.contains(&"-i".to_string()));
         assert_eq!(args.last(), Some(&"root@example.com".to_string()));
+    }
+
+    #[test]
+    fn ssh_terminal_uses_the_same_trust_file_as_embedded_connections() {
+        let args = SshConfig::new("example.com").ssh_args();
+        assert!(args.contains(&known_hosts_option(&known_hosts_path().unwrap())));
+        assert_eq!(
+            known_hosts_option(Path::new("C:/Users/Example User/.ssh/known_hosts")),
+            "UserKnownHostsFile=\"C:/Users/Example User/.ssh/known_hosts\""
+        );
     }
 
     #[test]

@@ -4,12 +4,14 @@
 //! libssh2 `Session`、`Sftp` 和当前工作目录放在锁后面，便于把克隆句柄传给
 //! 后台任务，同时避免不安全地共享可变状态。
 
+use crate::transfer_paths::{
+    check_copy_destination, check_depth, check_local_link, check_remote_name, local_child,
+};
 use anyhow::{Context, Result};
 use shell_core::AuthConfig;
 use ssh2::{FileStat, OpenFlags, OpenType, Session, Sftp};
 use std::{
     io::{self, Read, Seek, SeekFrom},
-    net::TcpStream,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -49,12 +51,7 @@ pub struct SftpSession {
 impl SftpSession {
     /// 连接 SFTP 服务器并返回已认证的会话。
     pub fn connect(config: &SftpConfig) -> Result<Self> {
-        let addr = format!("{}:{}", config.host, config.port);
-        let stream = TcpStream::connect(&addr).with_context(|| format!("connecting to {addr}"))?;
-
-        let mut session = Session::new().context("creating SSH session")?;
-        session.set_tcp_stream(stream);
-        session.handshake().context("SSH handshake")?;
+        let session = crate::ssh_transport::connect_verified(&config.host, config.port)?;
 
         // 执行认证。
         match &config.auth {
@@ -155,18 +152,23 @@ impl SftpSession {
 
         let mut result: Vec<SftpEntry> = entries
             .into_iter()
-            .map(|(path, stat)| SftpEntry {
-                name: path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                is_dir: stat.is_dir(),
-                size: stat.size.unwrap_or(0),
-                modified: stat.mtime.unwrap_or(0),
-                permissions: stat.perm,
+            .map(|(path, stat)| {
+                let relative = path
+                    .strip_prefix(remote_dir)
+                    .context("SFTP server returned an entry outside the listed directory")?;
+                let name = relative
+                    .to_str()
+                    .context("SFTP entry name is not valid UTF-8")?;
+                check_remote_name(name)?;
+                Ok(SftpEntry {
+                    name: name.to_string(),
+                    is_dir: stat.is_dir(),
+                    size: stat.size.unwrap_or(0),
+                    modified: stat.mtime.unwrap_or(0),
+                    permissions: stat.perm,
+                })
             })
-            .filter(|entry| entry.name != "." && entry.name != "..")
-            .collect();
+            .collect::<Result<_>>()?;
 
         result.sort_by(|a, b| {
             b.is_dir
@@ -209,8 +211,9 @@ impl SftpSession {
         let local_size = std::fs::metadata(local_path)
             .map(|meta| meta.len())
             .unwrap_or(0);
-        let resume_from = local_size.min(remote_size);
-        // 将续传偏移限制在本地/远端较小的一侧，避免过大的陈旧本地文件越过远端 EOF。
+        let resume_from = resume_offset(remote_size, local_size);
+        // A destination larger than the source cannot be a partial transfer.
+        // Restart and truncate it instead of silently reporting success.
         if resume_from == remote_size && remote_size > 0 {
             return Ok(remote_size);
         }
@@ -249,16 +252,26 @@ impl SftpSession {
     /// 下载远端文件或目录树到本地目录，能续传时优先续传。
     pub fn download_recursive(&self, remote_name: &str, local_dir: &Path) -> Result<u64> {
         let remote_path = self.resolve_remote_path(remote_name)?;
-        let local_root = local_dir.join(remote_name.trim_matches('/'));
-        self.download_tree(&remote_path, &local_root)
+        let remote_text = path_to_remote_string(&remote_path);
+        let name = remote_text.rsplit('/').next().unwrap_or_default();
+        // The user-selected root may intentionally be a link. Resolve it once;
+        // child entries may not redirect writes outside that selected root.
+        std::fs::create_dir_all(local_dir)?;
+        let local_dir = local_dir.canonicalize()?;
+        let local_root = local_child(&local_dir, name)?;
+        self.download_tree(&remote_path, &local_root, 0)
     }
 
-    fn download_tree(&self, remote_path: &Path, local_path: &Path) -> Result<u64> {
+    fn download_tree(&self, remote_path: &Path, local_path: &Path, depth: usize) -> Result<u64> {
+        check_depth(depth)?;
+        check_local_link(local_path)?;
         let sftp = self.sftp_guard()?;
         let stat = sftp
-            .stat(remote_path)
+            .lstat(remote_path)
             .with_context(|| format!("checking remote path {}", remote_path.display()))?;
         drop(sftp);
+
+        check_remote_tree_node(&stat, remote_path)?;
 
         if !stat.is_dir() {
             let remote_name = path_to_remote_string(remote_path);
@@ -271,8 +284,8 @@ impl SftpSession {
         let mut total = 0u64;
         for entry in self.list_at(remote_path)? {
             let child_remote = resolve_remote_path(remote_path, &entry.name);
-            let child_local = local_path.join(&entry.name);
-            total += self.download_tree(&child_remote, &child_local)?;
+            let child_local = local_child(local_path, &entry.name)?;
+            total += self.download_tree(&child_remote, &child_local, depth + 1)?;
         }
         Ok(total)
     }
@@ -307,8 +320,7 @@ impl SftpSession {
             .ok()
             .and_then(|stat| stat.size)
             .unwrap_or(0);
-        let resume_from = remote_size.min(local_size);
-        // 将续传偏移限制在本地/远端较小的一侧，避免陈旧远端元数据越过本地源文件。
+        let resume_from = resume_offset(local_size, remote_size);
         if resume_from == local_size && local_size > 0 {
             return Ok(local_size);
         }
@@ -338,15 +350,18 @@ impl SftpSession {
 
     /// 上传本地文件或目录树，能续传时优先续传。
     pub fn upload_recursive(&self, local_path: &Path, remote_name: &str) -> Result<u64> {
+        check_local_link(local_path)?;
         if local_path.is_dir() {
             let remote_path = self.resolve_remote_path(remote_name)?;
-            self.upload_tree(local_path, &remote_path)
+            self.upload_tree(local_path, &remote_path, 0)
         } else {
             self.upload_resume(local_path, remote_name)
         }
     }
 
-    fn upload_tree(&self, local_path: &Path, remote_path: &Path) -> Result<u64> {
+    fn upload_tree(&self, local_path: &Path, remote_path: &Path, depth: usize) -> Result<u64> {
+        check_depth(depth)?;
+        check_local_link(local_path)?;
         {
             let sftp = self.sftp_guard()?;
             if sftp.stat(remote_path).is_err() {
@@ -362,10 +377,12 @@ impl SftpSession {
             let entry =
                 entry.with_context(|| format!("reading entry in {}", local_path.display()))?;
             let child_local = entry.path();
+            check_local_link(&child_local)?;
+            check_remote_name(&entry.file_name().to_string_lossy())?;
             let child_remote =
                 resolve_remote_path(remote_path, &entry.file_name().to_string_lossy());
             if child_local.is_dir() {
-                total += self.upload_tree(&child_local, &child_remote)?;
+                total += self.upload_tree(&child_local, &child_remote, depth + 1)?;
             } else {
                 let remote_name = path_to_remote_string(&child_remote);
                 total += self.upload_resume(&child_local, &remote_name)?;
@@ -442,16 +459,44 @@ impl SftpSession {
 
     /// 将远端文件或目录树复制到当前目录。
     pub fn copy_entry(&self, source_path: &str, destination_name: &str) -> Result<u64> {
+        check_remote_name(destination_name)?;
         let source_path = normalize_remote_path(source_path);
-        let destination_path = self.resolve_remote_path(destination_name)?;
-        self.copy_tree(&source_path, &destination_path)
+        let cwd = self.cwd()?;
+        let (source_path, destination_path) = {
+            let sftp = self.sftp_guard()?;
+            check_remote_tree_node(
+                &sftp.lstat(&source_path).context("Checking copy source")?,
+                &source_path,
+            )?;
+            let source_path = sftp
+                .realpath(&source_path)
+                .context("Resolving copy source")?;
+            let directory = sftp.realpath(&cwd).context("Resolving copy destination")?;
+            (
+                source_path,
+                resolve_remote_path(&directory, destination_name),
+            )
+        };
+        check_copy_destination(&source_path, &destination_path)?;
+        self.copy_tree(&source_path, &destination_path, 0)
     }
 
-    fn copy_tree(&self, source_path: &Path, destination_path: &Path) -> Result<u64> {
+    fn copy_tree(&self, source_path: &Path, destination_path: &Path, depth: usize) -> Result<u64> {
+        check_depth(depth)?;
         let sftp = self.sftp_guard()?;
         let stat = sftp
-            .stat(source_path)
+            .lstat(source_path)
             .with_context(|| format!("checking remote path {}", source_path.display()))?;
+        check_remote_tree_node(&stat, source_path)?;
+        match sftp.lstat(destination_path) {
+            Ok(stat) if stat.file_type().is_symlink() => anyhow::bail!(
+                "Copy destination is a symbolic link: {}",
+                destination_path.display()
+            ),
+            Ok(stat) => check_remote_tree_node(&stat, destination_path)?,
+            Err(error) if error.code() == ssh2::ErrorCode::SFTP(2) => {}
+            Err(error) => return Err(error).context("Checking copy destination"),
+        }
         drop(sftp);
 
         if !stat.is_dir() {
@@ -471,7 +516,7 @@ impl SftpSession {
         for entry in self.list_at(source_path)? {
             let child_source = resolve_remote_path(source_path, &entry.name);
             let child_destination = resolve_remote_path(destination_path, &entry.name);
-            total += self.copy_tree(&child_source, &child_destination)?;
+            total += self.copy_tree(&child_source, &child_destination, depth + 1)?;
         }
         Ok(total)
     }
@@ -615,10 +660,61 @@ pub struct SftpEntry {
     pub permissions: Option<u32>,
 }
 
+fn check_remote_tree_node(stat: &FileStat, path: &Path) -> Result<()> {
+    if !stat.is_dir() && !stat.is_file() {
+        anyhow::bail!(
+            "Recursive transfers require a regular file or directory, not a symbolic link, special file or unknown type: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn resume_offset(source_size: u64, destination_size: u64) -> u64 {
+    if destination_size <= source_size {
+        destination_size
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn recursive_transfers_reject_links_devices_pipes_and_unknown_types() {
+        for (perm, accepted) in [
+            (Some(0o100644), true),
+            (Some(0o040755), true),
+            (Some(0o120777), false),
+            (Some(0o010644), false),
+            (Some(0o020666), false),
+            (None, false),
+        ] {
+            let stat = FileStat {
+                size: None,
+                uid: None,
+                gid: None,
+                perm,
+                atime: None,
+                mtime: None,
+            };
+            assert_eq!(
+                check_remote_tree_node(&stat, Path::new("/example")).is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
+    fn resume_restarts_when_the_destination_is_larger_than_the_source() {
+        assert_eq!(resume_offset(100, 40), 40);
+        assert_eq!(resume_offset(100, 100), 100);
+        assert_eq!(resume_offset(100, 140), 0);
+        assert_eq!(resume_offset(0, 140), 0);
+    }
 
     #[test]
     fn sftp_entry_sorted_dirs_first() {
@@ -726,6 +822,26 @@ mod tests {
         copy_prefix(&large_file, &downloaded_large, settings.large_bytes / 5)?;
         assert_eq!(
             session.download_resume("large.bin", &downloaded_large)?,
+            settings.large_bytes
+        );
+        assert_eq!(checksum_file(&downloaded_large)?, expected_large_hash);
+
+        // A stale destination longer than the source must be replaced, not
+        // mistaken for an already completed transfer in either direction.
+        let oversized = local_root.join("oversized.bin");
+        write_deterministic_file(&oversized, settings.large_bytes + 4096)?;
+        session.upload(&oversized, "large.bin")?;
+        assert_eq!(
+            session.upload_resume(&large_file, "large.bin")?,
+            settings.large_bytes
+        );
+        std::fs::copy(&oversized, &downloaded_large)?;
+        assert_eq!(
+            session.download_resume("large.bin", &downloaded_large)?,
+            settings.large_bytes
+        );
+        assert_eq!(
+            std::fs::metadata(&downloaded_large)?.len(),
             settings.large_bytes
         );
         assert_eq!(checksum_file(&downloaded_large)?, expected_large_hash);

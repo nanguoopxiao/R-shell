@@ -83,6 +83,7 @@ pub struct TerminalBuffer {
     lines: VecDeque<Vec<Cell>>,
     /// 进入备用屏幕时保存的主屏幕行。
     alt_lines: Option<VecDeque<Vec<Cell>>>,
+    alt_state: Option<SavedScreenState>,
     scrollback: VecDeque<Vec<Cell>>,
     max_scrollback: usize,
     cursor: CursorState,
@@ -97,6 +98,17 @@ pub struct TerminalBuffer {
     /// 最后一个打印字符落在末列时，终端会把光标保持在屏幕内，直到下一个可打印字符
     /// 到来时才真正换行。
     wrap_pending: bool,
+    modes: crate::TerminalModes,
+    history_generation: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SavedScreenState {
+    cursor: CursorState,
+    saved_cursor: CursorState,
+    attrs: Attrs,
+    scroll_top: usize,
+    scroll_bottom: usize,
 }
 
 impl TerminalBuffer {
@@ -111,6 +123,7 @@ impl TerminalBuffer {
                 .map(|_| vec![Cell::blank(Attrs::default()); width])
                 .collect(),
             alt_lines: None,
+            alt_state: None,
             scrollback: VecDeque::with_capacity(max_scrollback.min(1024)),
             max_scrollback,
             cursor: CursorState::default(),
@@ -120,7 +133,71 @@ impl TerminalBuffer {
             scroll_top: 0,
             scroll_bottom: height.saturating_sub(1),
             wrap_pending: false,
+            modes: crate::TerminalModes::default(),
+            history_generation: 0,
         }
+    }
+
+    #[must_use]
+    pub fn modes(&self) -> crate::TerminalModes {
+        self.modes
+    }
+
+    #[must_use]
+    pub fn is_alternate_screen(&self) -> bool {
+        self.alt_lines.is_some()
+    }
+
+    #[must_use]
+    pub fn history_generation(&self) -> u64 {
+        self.history_generation
+    }
+
+    pub fn set_private_mode(&mut self, mode: u16, enabled: bool) {
+        match mode {
+            1 => self.modes.application_cursor_keys = enabled,
+            6 => {
+                self.modes.origin = enabled;
+                self.position_cursor(0, 0);
+            }
+            7 => {
+                self.modes.auto_wrap = enabled;
+                self.wrap_pending = false;
+            }
+            25 => self.set_cursor_visible(enabled),
+            47 | 1047 | 1049 => {
+                if enabled {
+                    self.enter_alt_screen();
+                } else {
+                    self.exit_alt_screen();
+                }
+            }
+            2004 => self.modes.bracketed_paste = enabled,
+            _ => {}
+        }
+    }
+
+    pub fn set_newline_mode(&mut self, enabled: bool) {
+        self.modes.newline = enabled;
+    }
+
+    /// CUP/HVP/VPA positions are relative to the scroll region in origin mode.
+    pub fn position_cursor(&mut self, row: usize, col: usize) {
+        let row = if self.modes.origin {
+            self.scroll_top.saturating_add(row).min(self.scroll_bottom)
+        } else {
+            row
+        };
+        self.move_cursor(row, col);
+    }
+
+    #[must_use]
+    pub fn reported_cursor(&self) -> Cursor {
+        let mut cursor = self.cursor.pos;
+        if self.modes.origin {
+            cursor.row = cursor.row.saturating_sub(self.scroll_top);
+        }
+        cursor
     }
 
     #[must_use]
@@ -210,6 +287,19 @@ impl TerminalBuffer {
             self.lines.truncate(new_height);
         }
 
+        if let Some(primary) = self.alt_lines.as_mut() {
+            for line in primary.iter_mut() {
+                line.resize(new_width, Cell::blank(Attrs::default()));
+            }
+            primary.resize_with(new_height, || {
+                vec![Cell::blank(Attrs::default()); new_width]
+            });
+        }
+        if let Some(state) = self.alt_state.as_mut() {
+            state.scroll_top = 0;
+            state.scroll_bottom = new_height.saturating_sub(1);
+        }
+
         self.width = new_width;
         self.height = new_height;
         self.cursor.pos.row = self.cursor.pos.row.min(self.height.saturating_sub(1));
@@ -249,12 +339,12 @@ impl TerminalBuffer {
             return;
         }
 
-        if self.wrap_pending {
+        if self.wrap_pending && self.modes.auto_wrap {
             self.new_line();
             self.wrap_pending = false;
         }
 
-        if char_width > self.width.saturating_sub(self.cursor.pos.col) {
+        if char_width > self.width.saturating_sub(self.cursor.pos.col) && self.modes.auto_wrap {
             self.new_line();
         }
 
@@ -278,27 +368,49 @@ impl TerminalBuffer {
         }
 
         if self.cursor.pos.col + char_width >= self.width {
-            self.wrap_pending = true;
+            self.wrap_pending = self.modes.auto_wrap;
         } else {
             self.cursor.pos.col += char_width;
         }
     }
 
     pub fn tab(&mut self) {
+        // HT moves the cursor; it must not overwrite cells or print through the
+        // right margin (where put_char leaves a pending wrap without advancing).
+        self.wrap_pending = false;
         let next_tab = ((self.cursor.pos.col / 8) + 1) * 8;
-        while self.cursor.pos.col < next_tab.min(self.width) {
-            self.put_char(' ');
-        }
+        self.cursor.pos.col = next_tab.min(self.width.saturating_sub(1));
     }
 
     pub fn new_line(&mut self) {
-        self.wrap_pending = false;
         self.cursor.pos.col = 0;
-        if self.cursor.pos.row >= self.scroll_bottom {
+        self.index();
+    }
+
+    pub fn line_feed(&mut self) {
+        if self.modes.newline {
+            self.carriage_return();
+        }
+        self.index();
+    }
+
+    /// IND preserves the current column and only scrolls at the bottom margin.
+    pub fn index(&mut self) {
+        self.wrap_pending = false;
+        if self.cursor.pos.row == self.scroll_bottom {
             self.scroll_up_region(1);
         } else {
-            self.cursor.pos.row += 1;
+            self.cursor.pos.row = (self.cursor.pos.row + 1).min(self.height.saturating_sub(1));
             self.dirty.mark_line(self.cursor.pos.row);
+        }
+    }
+
+    pub fn reverse_index(&mut self) {
+        self.wrap_pending = false;
+        if self.cursor.pos.row == self.scroll_top {
+            self.scroll_down(1);
+        } else {
+            self.cursor.pos.row = self.cursor.pos.row.saturating_sub(1);
         }
     }
 
@@ -316,12 +428,22 @@ impl TerminalBuffer {
 
     pub fn cursor_up(&mut self, n: usize) {
         self.wrap_pending = false;
-        self.cursor.pos.row = self.cursor.pos.row.saturating_sub(n.max(1));
+        let top = if self.modes.origin {
+            self.scroll_top
+        } else {
+            0
+        };
+        self.cursor.pos.row = self.cursor.pos.row.saturating_sub(n.max(1)).max(top);
     }
 
     pub fn cursor_down(&mut self, n: usize) {
         self.wrap_pending = false;
-        self.cursor.pos.row = (self.cursor.pos.row + n.max(1)).min(self.height.saturating_sub(1));
+        let bottom = if self.modes.origin {
+            self.scroll_bottom
+        } else {
+            self.height.saturating_sub(1)
+        };
+        self.cursor.pos.row = self.cursor.pos.row.saturating_add(n.max(1)).min(bottom);
     }
 
     pub fn cursor_forward(&mut self, n: usize) {
@@ -348,8 +470,7 @@ impl TerminalBuffer {
 
     /// VPA：光标垂直绝对定位，行号从 1 开始。
     pub fn cursor_row(&mut self, row: usize) {
-        self.wrap_pending = false;
-        self.cursor.pos.row = row.saturating_sub(1).min(self.height.saturating_sub(1));
+        self.position_cursor(row.saturating_sub(1), self.cursor.pos.col);
     }
 
     /// DECSC：保存光标。
@@ -371,6 +492,36 @@ impl TerminalBuffer {
 
     // ── Erase operations ──────────────────────────────────────────────────
 
+    /// RIS clears terminal state without changing the configured history limit.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.size(), self.max_scrollback);
+    }
+
+    /// ECH replaces at most `n` columns without moving the cursor.
+    pub fn erase_chars(&mut self, n: usize) {
+        let row = self.cursor.pos.row;
+        let col = self.cursor.pos.col;
+        if let Some(line) = self.lines.get_mut(row) {
+            let end = col.saturating_add(n).min(line.len());
+            if col >= end {
+                return;
+            }
+            // Do not leave half of a wide glyph at either erase boundary.
+            let start = if line[col].is_continuation() && col > 0 {
+                col - 1
+            } else {
+                col
+            };
+            let end = if end < line.len() && line[end].is_continuation() {
+                end + 1
+            } else {
+                end
+            };
+            line[start..end].fill(Cell::blank(self.attrs));
+            self.dirty.mark_line(row);
+        }
+    }
+
     pub fn clear_screen(&mut self) {
         for line in &mut self.lines {
             line.fill(Cell::blank(self.attrs));
@@ -379,7 +530,7 @@ impl TerminalBuffer {
         self.dirty.mark_all();
     }
 
-    /// ED：擦除显示区域（0=到末尾，1=到开头，2/3=全部）。
+    /// ED：擦除显示区域（0=到末尾，1=到开头，2=屏幕，3=历史）。
     pub fn erase_display(&mut self, mode: u16) {
         let row = self.cursor.pos.row;
         let col = self.cursor.pos.col;
@@ -412,12 +563,14 @@ impl TerminalBuffer {
                     self.dirty.mark_line(row);
                 }
             }
-            _ => {
+            2 => {
                 for line in &mut self.lines {
                     line.fill(Cell::blank(self.attrs));
                 }
                 self.dirty.mark_all();
             }
+            3 => self.scrollback.clear(),
+            _ => {}
         }
     }
 
@@ -519,7 +672,7 @@ impl TerminalBuffer {
             self.scroll_top = top;
             self.scroll_bottom = bottom;
         }
-        self.cursor.pos = Cursor::default();
+        self.position_cursor(0, 0);
     }
 
     // ── Alternate screen ──────────────────────────────────────────────────
@@ -527,7 +680,13 @@ impl TerminalBuffer {
     /// smcup：切换到备用屏幕。
     pub fn enter_alt_screen(&mut self) {
         if self.alt_lines.is_none() {
-            self.save_cursor();
+            self.alt_state = Some(SavedScreenState {
+                cursor: self.cursor,
+                saved_cursor: self.saved_cursor,
+                attrs: self.attrs,
+                scroll_top: self.scroll_top,
+                scroll_bottom: self.scroll_bottom,
+            });
             self.alt_lines = Some(std::mem::replace(
                 &mut self.lines,
                 (0..self.height)
@@ -535,6 +694,9 @@ impl TerminalBuffer {
                     .collect(),
             ));
             self.cursor.pos = Cursor::default();
+            self.scroll_top = 0;
+            self.scroll_bottom = self.height.saturating_sub(1);
+            self.wrap_pending = false;
             self.dirty.mark_all();
         }
     }
@@ -543,7 +705,16 @@ impl TerminalBuffer {
     pub fn exit_alt_screen(&mut self) {
         if let Some(primary) = self.alt_lines.take() {
             self.lines = primary;
-            self.restore_cursor();
+            if let Some(state) = self.alt_state.take() {
+                self.cursor = state.cursor;
+                self.saved_cursor = state.saved_cursor;
+                self.attrs = state.attrs;
+                self.scroll_top = state.scroll_top;
+                self.scroll_bottom = state.scroll_bottom;
+            }
+            self.cursor.pos.row = self.cursor.pos.row.min(self.height.saturating_sub(1));
+            self.cursor.pos.col = self.cursor.pos.col.min(self.width.saturating_sub(1));
+            self.wrap_pending = false;
             self.dirty.mark_all();
         }
     }
@@ -622,6 +793,8 @@ impl TerminalBuffer {
             };
             // 将被挤出的行写入回滚历史。
             if top == 0
+                && bottom + 1 == self.height
+                && self.alt_lines.is_none()
                 && self.max_scrollback > 0
                 && let Some(line) = removed
             {
@@ -629,6 +802,7 @@ impl TerminalBuffer {
                     self.scrollback.pop_front();
                 }
                 self.scrollback.push_back(line);
+                self.history_generation = self.history_generation.saturating_add(1);
             }
             // 在滚动区域底部插入空白行。push_back 是 O(1)，insert(i<len-1) 是 O(N)。
             let blank = vec![Cell::blank(self.attrs); self.width];

@@ -4,12 +4,20 @@
 /// 支持 FTP 控制通道，以及用于 LIST/RETR/STOR 的被动模式数据通道。
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::Duration;
 
 use shell_core::ProtocolEvent;
 use tracing::warn;
+
+use crate::output::{OutputSender, output_channel};
+
+const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct FtpConfig {
@@ -35,6 +43,7 @@ impl FtpConfig {
 pub struct FtpConnection {
     input_tx: mpsc::Sender<Vec<u8>>,
     shutdown_stream: TcpStream,
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl FtpConnection {
@@ -47,7 +56,8 @@ impl FtpConnection {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         let shutdown_stream = stream.try_clone()?;
 
-        let (event_tx, event_rx) = mpsc::channel::<ProtocolEvent>();
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let (event_tx, event_rx) = output_channel(Arc::clone(&shutdown_requested));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
 
         thread::spawn(move || {
@@ -58,6 +68,7 @@ impl FtpConnection {
             Self {
                 input_tx,
                 shutdown_stream,
+                shutdown_requested,
             },
             event_rx,
         ))
@@ -69,6 +80,7 @@ impl FtpConnection {
     }
 
     pub fn shutdown(&self) -> anyhow::Result<()> {
+        self.shutdown_requested.store(true, Ordering::Relaxed);
         let _ = self.input_tx.send(b"quit\r\n".to_vec());
         let _ = self.shutdown_stream.shutdown(Shutdown::Both);
         Ok(())
@@ -81,24 +93,65 @@ impl Drop for FtpConnection {
     }
 }
 
-fn emit(tx: &mpsc::Sender<ProtocolEvent>, text: &str) {
+fn emit(tx: &OutputSender, text: &str) {
     let _ = tx.send(ProtocolEvent::Output(text.as_bytes().to_vec()));
 }
 
 /// 从读取器读取一个完整的 FTP 回复，回复可能包含多行。
-fn read_reply(reader: &mut BufReader<TcpStream>) -> io::Result<String> {
+fn read_reply(reader: &mut impl BufRead) -> io::Result<String> {
     let mut full = String::new();
+    let mut multiline_code: Option<[u8; 3]> = None;
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line)?;
+        let remaining = MAX_REPLY_BYTES - full.len();
+        let read = Read::by_ref(reader)
+            .take(remaining as u64 + 1)
+            .read_line(&mut line)?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "FTP server disconnected during its reply",
+            ));
+        }
+        if read > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FTP reply exceeds the size limit",
+            ));
+        }
+        if !line.ends_with('\n') {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "FTP server disconnected during its reply",
+            ));
+        }
         full.push_str(&line);
-        // 单行回复形如 "NNN text"，多行续行形如 "NNN-text"；多行回复的最后
-        // 一行重新变为 "NNN text"，也就是第 3 位没有连字符。
-        if line.len() >= 4 && line.as_bytes().get(3) != Some(&b'-') {
-            break;
+        let bytes = line.as_bytes();
+        if let Some(code) = multiline_code {
+            // RFC 959: only the original code followed by a space ends a
+            // multiline reply. Intermediate lines may be arbitrary text.
+            if bytes.starts_with(&code) && bytes.get(3) == Some(&b' ') {
+                return Ok(full);
+            }
+        } else {
+            if bytes.len() < 4 || !bytes[..3].iter().all(u8::is_ascii_digit) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid FTP reply code",
+                ));
+            }
+            match bytes[3] {
+                b' ' => return Ok(full),
+                b'-' => multiline_code = Some([bytes[0], bytes[1], bytes[2]]),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid FTP reply separator",
+                    ));
+                }
+            }
         }
     }
-    Ok(full)
 }
 
 /// 解析 PASV 回复，并返回需要连接的数据通道 `(host, port)`。
@@ -107,8 +160,9 @@ fn parse_pasv(reply: &str) -> Option<(String, u16)> {
     let end = reply.rfind(')')?;
     let nums: Vec<u8> = reply[start + 1..end]
         .split(',')
-        .filter_map(|s| s.trim().parse::<u8>().ok())
-        .collect();
+        .map(|s| s.trim().parse::<u8>())
+        .collect::<Result<_, _>>()
+        .ok()?;
     if nums.len() != 6 {
         return None;
     }
@@ -126,7 +180,7 @@ fn run_ftp_session(
     stream: TcpStream,
     config: FtpConfig,
     input_rx: mpsc::Receiver<Vec<u8>>,
-    event_tx: mpsc::Sender<ProtocolEvent>,
+    event_tx: OutputSender,
 ) {
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
@@ -176,7 +230,7 @@ fn run_ftp_session(
 
     let mut line_buf = Vec::<u8>::new();
 
-    loop {
+    while !event_tx.is_cancelled() {
         // 轮询用户输入。
         match input_rx.try_recv() {
             Ok(bytes) => {
@@ -234,7 +288,7 @@ fn handle_command(
     cmd: &str,
     writer: &mut TcpStream,
     reader: &mut BufReader<TcpStream>,
-    event_tx: &mpsc::Sender<ProtocolEvent>,
+    event_tx: &OutputSender,
     _host: &str,
 ) {
     let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
@@ -306,7 +360,7 @@ fn handle_command(
 fn send_simple(
     writer: &mut TcpStream,
     reader: &mut BufReader<TcpStream>,
-    event_tx: &mpsc::Sender<ProtocolEvent>,
+    event_tx: &OutputSender,
     cmd: &str,
 ) {
     if writer.write_all(cmd.as_bytes()).is_err() {
@@ -323,7 +377,7 @@ fn send_simple(
 fn data_cmd(
     writer: &mut TcpStream,
     reader: &mut BufReader<TcpStream>,
-    event_tx: &mpsc::Sender<ProtocolEvent>,
+    event_tx: &OutputSender,
     verb: &str,
     arg: &str,
 ) {
@@ -355,6 +409,25 @@ fn data_cmd(
         }
     };
 
+    // Establish the passive data connection before requesting the transfer.
+    // Some servers wait for it before sending their preliminary 1xx reply.
+    let data_addr = format!("{data_host}:{data_port}");
+    let mut data_stream = match TcpStream::connect(&data_addr) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("FTP data connection failed: {e}");
+            emit(event_tx, &format!("Data connection failed: {e}\r\n"));
+            return;
+        }
+    };
+    if data_stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .is_err()
+    {
+        emit(event_tx, "Failed to configure the FTP data connection.\r\n");
+        return;
+    }
+
     // 发送实际数据命令。
     let full_cmd = if arg.is_empty() {
         format!("{verb}\r\n")
@@ -379,26 +452,25 @@ fn data_cmd(
         return;
     }
 
-    // 连接数据通道。
-    let data_addr = format!("{data_host}:{data_port}");
-    let mut data_stream = match TcpStream::connect(&data_addr) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("FTP data connection failed: {e}");
-            emit(event_tx, &format!("Data connection failed: {e}\r\n"));
-            return;
-        }
-    };
-
     // 将数据流输出到终端。
     let mut buf = [0u8; 4096];
-    loop {
+    while !event_tx.is_cancelled() {
         match data_stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 // 为终端显示把裸 LF 规范化为 CRLF。
                 let chunk = normalize_newlines(&buf[..n]);
-                let _ = event_tx.send(ProtocolEvent::Output(chunk));
+                if event_tx.send(ProtocolEvent::Output(chunk)).is_err() {
+                    return;
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
             }
             Err(_) => break,
         }
@@ -441,5 +513,112 @@ mod tests {
         let input = b"line1\nline2\r\nline3\n";
         let out = normalize_newlines(input);
         assert_eq!(out, b"line1\r\nline2\r\nline3\r\n");
+    }
+
+    #[test]
+    fn disconnected_or_truncated_replies_return_eof() {
+        for bytes in [
+            b"".as_slice(),
+            b"220-incomplete\r\n",
+            b"220 missing newline",
+        ] {
+            let mut reader = io::Cursor::new(bytes);
+            assert_eq!(
+                read_reply(&mut reader).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
+
+    #[test]
+    fn multiline_reply_consumes_only_its_matching_terminator() {
+        let reply = "220-Welcome\r\nArbitrary text\r\n123 unrelated code\r\n220 Ready\r\n";
+        let mut reader = io::Cursor::new(format!("{reply}230 Logged in\r\n"));
+        assert_eq!(read_reply(&mut reader).unwrap(), reply);
+        assert_eq!(read_reply(&mut reader).unwrap(), "230 Logged in\r\n");
+    }
+
+    #[test]
+    fn malformed_and_oversized_replies_are_rejected() {
+        for reply in [
+            "garbage\r\n".to_string(),
+            format!("220 {}\r\n", "x".repeat(MAX_REPLY_BYTES)),
+        ] {
+            assert!(read_reply(&mut io::Cursor::new(reply)).is_err());
+        }
+        assert!(parse_pasv("227 (127,0,0,bad,1,10,20)").is_none());
+    }
+
+    #[test]
+    fn passive_transfer_connects_before_waiting_for_the_preliminary_reply() {
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut control = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let worker = thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "TYPE I\r\n");
+            server.write_all(b"200 Binary\r\n").unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "PASV\r\n");
+            let data_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = data_listener.local_addr().unwrap().port();
+            write!(
+                server,
+                "227 Passive (127,0,0,1,{},{})\r\n",
+                port >> 8,
+                port & 255
+            )
+            .unwrap();
+            data_listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut data = loop {
+                match data_listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "client never opened the passive data connection"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("data accept failed: {error}"),
+                }
+            };
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "LIST\r\n");
+            server.write_all(b"150 Listing\r\n").unwrap();
+            data.write_all(b"example.txt\n").unwrap();
+            drop(data);
+            server.write_all(b"226 Complete\r\n").unwrap();
+        });
+        let mut reader = BufReader::new(control.try_clone().unwrap());
+        let (sender, receiver) = output_channel(Arc::new(AtomicBool::new(false)));
+        data_cmd(&mut control, &mut reader, &sender, "LIST", "");
+        drop(sender);
+        worker.join().unwrap();
+        let output: Vec<u8> = receiver
+            .into_iter()
+            .flat_map(|event| {
+                if let ProtocolEvent::Output(bytes) = event {
+                    bytes
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        assert_eq!(output, b"example.txt\r\n226 Complete\r\n");
     }
 }

@@ -12,14 +12,16 @@ use gtk4::pango::{
 use gtk4::prelude::*;
 use gtk4::{
     DrawingArea, EventControllerKey, EventControllerMotion, EventControllerScroll,
-    EventControllerScrollFlags, GestureClick, GestureDrag,
+    EventControllerScrollFlags, GestureClick, GestureDrag, IMMulticontext,
 };
 use gtk4::{gdk, gio, glib};
 use pangocairo::functions::show_layout;
 use shell_core::TerminalSize;
-use shell_terminal::{AnsiParser, AttrsFlags, Cell, Color, TerminalBuffer, TerminalSnapshot};
+use shell_terminal::{
+    AnsiParser, AttrsFlags, Cell, Color, TerminalBuffer, TerminalSnapshot, encode_paste,
+};
 
-type InputHandler = Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>;
+type InputHandler = Rc<RefCell<Option<Rc<dyn Fn(Vec<u8>)>>>>;
 type ResizeHandler = Rc<RefCell<Option<Box<dyn Fn(TerminalSize)>>>>;
 type FontZoomHandler = Rc<RefCell<Option<Box<dyn Fn(i32)>>>>;
 type SelectionState = Rc<RefCell<Option<Selection>>>;
@@ -33,7 +35,7 @@ const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 // 拉丁字母上伸/下伸部样本：避免每帧触发 CJK 字体回退加载。在中文 Windows 上，
 // 频繁加载回退字体可能额外占用 70-100MB。
 const METRIC_HEIGHT_SAMPLE: &str = "Mgj|";
-const TERMINAL_BG: (f64, f64, f64) = (0.04, 0.045, 0.05);
+const TERMINAL_BG: (f64, f64, f64) = (17.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0);
 const TERMINAL_FG: (f64, f64, f64) = (0.86, 0.88, 0.90);
 const FONT_ZOOM_MIN_PT: f64 = 8.0;
 const FONT_ZOOM_MAX_PT: f64 = 32.0;
@@ -116,6 +118,38 @@ struct DrawState {
     render_cache: RenderCacheRef,
     cursor_blink_state: CursorBlinkState,
     hovered_url: HoveredUrlState,
+    input_method: InputMethodState,
+}
+
+#[derive(Clone)]
+struct InputMethodState {
+    context: IMMulticontext,
+    preedit: Rc<RefCell<String>>,
+}
+
+#[derive(Clone)]
+struct TerminalInputState {
+    handler: InputHandler,
+    buffer: Rc<RefCell<TerminalBuffer>>,
+    scroll_offset: Rc<RefCell<i64>>,
+    cursor_blink: CursorBlinkState,
+}
+
+impl TerminalInputState {
+    fn send(&self, area: &DrawingArea, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        *self.scroll_offset.borrow_mut() = 0;
+        self.cursor_blink.set(true);
+        area.queue_draw();
+        // Reconnect callbacks may replace the handler, so release its RefCell
+        // borrow before calling back into the application.
+        let handler = self.handler.borrow().clone();
+        if let Some(handler) = handler {
+            handler(bytes);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +234,8 @@ pub struct GtkTerminalView {
     /// 缓存的单元格尺寸；字体或 widget 尺寸变化时失效。
     render_cache: RenderCacheRef,
     cursor_blink_state: CursorBlinkState,
+    input_method: InputMethodState,
+    selection: SelectionState,
 }
 
 impl GtkTerminalView {
@@ -225,10 +261,21 @@ impl GtkTerminalView {
         let render_cache: RenderCacheRef = Rc::new(RefCell::new(None));
         let cursor_blink_state: CursorBlinkState = Rc::new(BlinkCell::new(true));
         let hovered_url: HoveredUrlState = Rc::new(RefCell::new(None));
+        let input_method = InputMethodState {
+            context: IMMulticontext::new(),
+            preedit: Rc::new(RefCell::new(String::new())),
+        };
+        let input_state = TerminalInputState {
+            handler: Rc::clone(&input_handler),
+            buffer: Rc::clone(&buffer),
+            scroll_offset: Rc::clone(&scroll_offset),
+            cursor_blink: Rc::clone(&cursor_blink_state),
+        };
         let draw_state = DrawState {
             render_cache: Rc::clone(&render_cache),
             cursor_blink_state: Rc::clone(&cursor_blink_state),
             hovered_url: Rc::clone(&hovered_url),
+            input_method: input_method.clone(),
         };
 
         connect_draw(
@@ -242,12 +289,10 @@ impl GtkTerminalView {
         );
         connect_keyboard(
             &area,
-            Rc::clone(&input_handler),
-            Rc::clone(&buffer),
-            Rc::clone(&scroll_offset),
+            input_state,
             Rc::clone(&selection),
             appearance.clone(),
-            Rc::clone(&cursor_blink_state),
+            input_method.clone(),
         );
         connect_scroll(
             &area,
@@ -276,6 +321,8 @@ impl GtkTerminalView {
             scroll_offset,
             render_cache,
             cursor_blink_state,
+            input_method,
+            selection,
         }
     }
 
@@ -285,7 +332,10 @@ impl GtkTerminalView {
     }
 
     pub fn set_input_handler(&self, handler: impl Fn(Vec<u8>) + 'static) {
-        *self.input_handler.borrow_mut() = Some(Box::new(handler));
+        *self.input_handler.borrow_mut() = Some(Rc::new(handler));
+        if self.area.has_focus() {
+            self.input_method.context.focus_in();
+        }
     }
 
     pub fn set_resize_handler(&self, handler: impl Fn(TerminalSize) + 'static) {
@@ -300,6 +350,11 @@ impl GtkTerminalView {
         *self.input_handler.borrow_mut() = None;
         *self.resize_handler.borrow_mut() = None;
         *self.font_zoom_handler.borrow_mut() = None;
+        if self.area.is_realized() {
+            self.input_method.context.reset();
+            self.input_method.context.focus_out();
+        }
+        self.input_method.preedit.borrow_mut().clear();
     }
 
     pub fn set_font_description(&self, font_description: impl Into<String>) {
@@ -310,15 +365,53 @@ impl GtkTerminalView {
     }
 
     pub fn feed(&self, bytes: &[u8]) {
-        // 渲染器在 UI 边界负责解析：协议适配器只交付字节。收到新输出时总是回到实时尾部，
-        // 这符合用户查看历史后终端继续输出时的常见行为。
-        let mut buffer = self.buffer.borrow_mut();
-        self.parser.borrow_mut().feed_bytes(&mut buffer, bytes);
-        // 收到新数据后回到实时尾部视图。
-        *self.scroll_offset.borrow_mut() = 0;
+        let responses = {
+            let mut buffer = self.buffer.borrow_mut();
+            let generation = buffer.history_generation();
+            let previous_history = buffer.scrollback_len();
+            let mut parser = self.parser.borrow_mut();
+            parser.feed_bytes(&mut buffer, bytes);
+            let added = buffer.history_generation().saturating_sub(generation);
+            let offset = scroll_offset_after_output(
+                *self.scroll_offset.borrow(),
+                generation,
+                buffer.history_generation(),
+                buffer.scrollback_len(),
+                buffer.is_alternate_screen(),
+            );
+            *self.scroll_offset.borrow_mut() = offset;
+            if buffer.history_generation() < generation
+                || (previous_history as u64).saturating_add(added) > buffer.scrollback_len() as u64
+                || buffer.is_alternate_screen()
+            {
+                self.selection.borrow_mut().take();
+            }
+            parser.take_responses()
+        };
+        if !responses.is_empty() {
+            let handler = self.input_handler.borrow().clone();
+            if let Some(handler) = handler {
+                handler(responses);
+            }
+        }
         self.cursor_blink_state.set(true);
         self.area.queue_draw();
     }
+}
+
+fn scroll_offset_after_output(
+    offset: i64,
+    before: u64,
+    after: u64,
+    history_len: usize,
+    alternate: bool,
+) -> i64 {
+    if offset <= 0 || after < before || alternate {
+        return 0;
+    }
+    offset
+        .saturating_add(after.saturating_sub(before).min(i64::MAX as u64) as i64)
+        .min(history_len as i64)
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
@@ -368,6 +461,15 @@ fn connect_draw(
         );
         let selection = selection.borrow().as_ref().copied();
         let cursor = buffer.cursor_state();
+        draw_state
+            .input_method
+            .context
+            .set_cursor_location(&gdk::Rectangle::new(
+                (cursor.pos.col as f64 * metrics.cell_width) as i32,
+                (cursor.pos.row as f64 * metrics.line_height) as i32,
+                metrics.cell_width.ceil() as i32,
+                metrics.line_height.ceil() as i32,
+            ));
         let should_paint_cursor = cursor_should_paint(
             widget.has_focus(),
             cursor.visible,
@@ -447,6 +549,30 @@ fn connect_draw(
                     );
                 }
             }
+        }
+        let preedit = draw_state.input_method.preedit.borrow();
+        if !preedit.is_empty() && widget.has_focus() && *scroll_offset.borrow() == 0 {
+            shared_layout.set_font_description(Some(&font_description));
+            shared_layout.set_attributes(None);
+            shared_layout.set_text(&preedit);
+            let (text_width, _) = shared_layout.pixel_size();
+            let x = cursor.pos.col as f64 * metrics.cell_width;
+            let y = cursor.pos.row as f64 * metrics.line_height;
+            cr.set_source_rgb(0.12, 0.15, 0.18);
+            cr.rectangle(
+                x,
+                y,
+                f64::from(text_width).max(metrics.cell_width),
+                metrics.line_height,
+            );
+            let _ = cr.fill();
+            cr.set_source_rgb(0.9, 0.95, 1.0);
+            cr.move_to(x, y);
+            show_layout(cr, shared_layout);
+            cr.set_line_width(1.0);
+            cr.move_to(x, y + metrics.line_height - 1.0);
+            cr.line_to(x + f64::from(text_width), y + metrics.line_height - 1.0);
+            let _ = cr.stroke();
         }
     });
 }
@@ -2047,44 +2173,102 @@ fn indexed_to_rgb(idx: u8) -> (u8, u8, u8) {
 
 fn connect_keyboard(
     area: &DrawingArea,
-    input_handler: InputHandler,
-    buffer: Rc<RefCell<TerminalBuffer>>,
-    scroll_offset: Rc<RefCell<i64>>,
+    input: TerminalInputState,
     selection: SelectionState,
     appearance: TerminalAppearance,
-    cursor_blink_state: CursorBlinkState,
+    input_method: InputMethodState,
 ) {
+    let context_for_realize = input_method.context.clone();
+    area.connect_realize(move |area| {
+        context_for_realize.set_client_widget(Some(area));
+        if area.has_focus() {
+            context_for_realize.focus_in();
+        }
+    });
+    let area_for_commit = area.downgrade();
+    let input_for_commit = input.clone();
+    let preedit_for_commit = Rc::clone(&input_method.preedit);
+    input_method.context.connect_commit(move |_, text| {
+        preedit_for_commit.borrow_mut().clear();
+        if let Some(area) = area_for_commit.upgrade() {
+            input_for_commit.send(&area, text.as_bytes().to_vec());
+        }
+    });
+    let area_for_preedit = area.downgrade();
+    let preedit = Rc::clone(&input_method.preedit);
+    let scroll_for_preedit = Rc::clone(&input.scroll_offset);
+    input_method
+        .context
+        .connect_preedit_changed(move |context| {
+            let (text, _, _) = context.preedit_string();
+            *preedit.borrow_mut() = text.chars().take(512).collect();
+            if !text.is_empty() {
+                *scroll_for_preedit.borrow_mut() = 0;
+            }
+            if let Some(area) = area_for_preedit.upgrade() {
+                area.queue_draw();
+            }
+        });
+    let context_for_unrealize = input_method.context.clone();
+    area.connect_unrealize(move |_| {
+        context_for_unrealize.reset();
+        context_for_unrealize.set_client_widget(None::<&gtk4::Widget>);
+    });
+
     let controller = EventControllerKey::new();
-    let area_for_keys = area.clone();
+    // GTK filters key press/release through IME first. Only unconsumed keys
+    // reach key_to_bytes, so committed text is never sent a second time.
+    controller.set_im_context(Some(&input_method.context));
+    let area_for_keys = area.downgrade();
     controller.connect_key_pressed(move |_, key, _code, mods| {
-        if mods.contains(gdk::ModifierType::CONTROL_MASK) {
+        let Some(area) = area_for_keys.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        if mods.contains(gdk::ModifierType::CONTROL_MASK)
+            && !mods.contains(gdk::ModifierType::ALT_MASK)
+        {
             match key {
-                gdk::Key::C | gdk::Key::c if has_copyable_selection(&selection) => {
+                gdk::Key::C | gdk::Key::c
+                    if mods.contains(gdk::ModifierType::SHIFT_MASK)
+                        || has_copyable_selection(&selection) =>
+                {
                     copy_selection_to_clipboard(
-                        &area_for_keys,
-                        &buffer.borrow(),
-                        *scroll_offset.borrow(),
+                        &area,
+                        &input.buffer.borrow(),
+                        *input.scroll_offset.borrow(),
                         &selection,
                         &appearance,
                     );
                     return glib::Propagation::Stop;
                 }
                 gdk::Key::V | gdk::Key::v => {
-                    cursor_blink_state.set(true);
-                    area_for_keys.queue_draw();
-                    paste_clipboard_text(Rc::clone(&input_handler));
+                    paste_clipboard_text(&area, input.clone());
                     return glib::Propagation::Stop;
                 }
                 _ => {}
             }
         }
 
-        if let Some(bytes) = key_to_bytes(key, mods) {
-            cursor_blink_state.set(true);
-            area_for_keys.queue_draw();
-            if let Some(handler) = input_handler.borrow().as_ref() {
-                handler(bytes);
-            }
+        if mods.contains(gdk::ModifierType::SHIFT_MASK)
+            && !mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK)
+            && matches!(key, gdk::Key::Page_Up | gdk::Key::Page_Down)
+        {
+            let buffer = input.buffer.borrow();
+            let step = i64::from(buffer.size().rows);
+            let delta = if key == gdk::Key::Page_Up {
+                step
+            } else {
+                -step
+            };
+            let mut offset = input.scroll_offset.borrow_mut();
+            *offset = (*offset + delta).clamp(0, buffer.scrollback_len() as i64);
+            area.queue_draw();
+            return glib::Propagation::Stop;
+        }
+
+        let application_cursor = input.buffer.borrow().modes().application_cursor_keys;
+        if let Some(bytes) = key_to_bytes(key, mods, application_cursor) {
+            input.send(&area, bytes);
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -2093,11 +2277,10 @@ fn connect_keyboard(
 }
 
 fn connect_cursor_blink(area: &DrawingArea, cursor_blink_state: CursorBlinkState) {
-    let area_for_focus = area.clone();
     let blink_for_focus = Rc::clone(&cursor_blink_state);
-    area.connect_has_focus_notify(move |_| {
+    area.connect_has_focus_notify(move |area| {
         blink_for_focus.set(true);
-        area_for_focus.queue_draw();
+        area.queue_draw();
     });
 
     let area_weak = {
@@ -2142,12 +2325,15 @@ fn connect_pointer(
     let render_cache_update = Rc::clone(&render_cache);
 
     let motion = EventControllerMotion::new();
-    let area_for_motion = area.clone();
+    let area_for_motion = area.downgrade();
     let buffer_for_motion = Rc::clone(&buffer);
     let scroll_for_motion = Rc::clone(&scroll_offset);
     let cache_for_motion = Rc::clone(&render_cache);
     let hovered_for_motion = Rc::clone(&hovered_url);
     motion.connect_motion(move |_, x, y| {
+        let Some(area_for_motion) = area_for_motion.upgrade() else {
+            return;
+        };
         let next_url = url_at_point(
             &area_for_motion,
             &buffer_for_motion.borrow(),
@@ -2167,9 +2353,12 @@ fn connect_pointer(
             area_for_motion.set_cursor_from_name(None);
         }
     });
-    let area_for_leave = area.clone();
+    let area_for_leave = area.downgrade();
     let hovered_for_leave = Rc::clone(&hovered_url);
     motion.connect_leave(move |_| {
+        let Some(area_for_leave) = area_for_leave.upgrade() else {
+            return;
+        };
         if hovered_for_leave.borrow_mut().take().is_some() {
             area_for_leave.queue_draw();
         }
@@ -2179,11 +2368,14 @@ fn connect_pointer(
 
     let click = GestureClick::new();
     click.set_button(1);
-    let area_for_click = area.clone();
+    let area_for_click = area.downgrade();
     let buffer_for_click = Rc::clone(&buffer);
     let scroll_for_click = Rc::clone(&scroll_offset);
     let cache_for_click = Rc::clone(&render_cache);
     click.connect_released(move |_, _presses, x, y| {
+        let Some(area_for_click) = area_for_click.upgrade() else {
+            return;
+        };
         if let Some(url) = url_at_point(
             &area_for_click,
             &buffer_for_click.borrow(),
@@ -2201,12 +2393,15 @@ fn connect_pointer(
 
     let drag = GestureDrag::new();
     drag.set_button(1);
-    let area_for_begin = area.clone();
+    let area_for_begin = area.downgrade();
     let buffer_for_begin = Rc::clone(&buffer);
     let scroll_for_begin = Rc::clone(&scroll_offset);
     let selection_for_begin = Rc::clone(&selection);
     let drag_origin_for_begin = Rc::clone(&drag_origin);
     drag.connect_drag_begin(move |_, x, y| {
+        let Some(area_for_begin) = area_for_begin.upgrade() else {
+            return;
+        };
         area_for_begin.grab_focus();
         *drag_origin_for_begin.borrow_mut() = Some((x, y));
         if let Some(point) = grid_point_at(
@@ -2225,12 +2420,15 @@ fn connect_pointer(
         }
     });
 
-    let area_for_update = area.clone();
+    let area_for_update = area.downgrade();
     let buffer_for_update = Rc::clone(&buffer);
     let scroll_for_update = Rc::clone(&scroll_offset);
     let selection_for_update = Rc::clone(&selection);
     let drag_origin_for_update = Rc::clone(&drag_origin);
     drag.connect_drag_update(move |_, offset_x, offset_y| {
+        let Some(area_for_update) = area_for_update.upgrade() else {
+            return;
+        };
         let Some((start_x, start_y)) = *drag_origin_for_update.borrow() else {
             return;
         };
@@ -2250,10 +2448,13 @@ fn connect_pointer(
         }
     });
 
-    let area_for_end = area.clone();
+    let area_for_end = area.downgrade();
     let selection_for_end = Rc::clone(&selection);
     let drag_origin_for_end = Rc::clone(&drag_origin);
     drag.connect_drag_end(move |_, _offset_x, _offset_y| {
+        let Some(area_for_end) = area_for_end.upgrade() else {
+            return;
+        };
         *drag_origin_for_end.borrow_mut() = None;
         let should_clear = selection_for_end
             .borrow()
@@ -2297,18 +2498,20 @@ fn copy_selection_to_clipboard(
     }
 }
 
-fn paste_clipboard_text(input_handler: InputHandler) {
+fn paste_clipboard_text(area: &DrawingArea, input: TerminalInputState) {
     let Some(display) = gdk::Display::default() else {
         return;
     };
 
+    let area = area.downgrade();
     display
         .clipboard()
         .read_text_async(None::<&gtk4::gio::Cancellable>, move |result| {
             if let Ok(Some(text)) = result
-                && let Some(handler) = input_handler.borrow().as_ref()
+                && let Some(area) = area.upgrade()
             {
-                handler(text.as_str().as_bytes().to_vec());
+                let bracketed = input.buffer.borrow().modes().bracketed_paste;
+                input.send(&area, encode_paste(text.as_str(), bracketed));
             }
         });
 }
@@ -2516,24 +2719,98 @@ fn extract_selection_text(
     rows.join("\n")
 }
 
-fn key_to_bytes(key: gdk::Key, mods: gdk::ModifierType) -> Option<Vec<u8>> {
+fn key_to_bytes(
+    key: gdk::Key,
+    mods: gdk::ModifierType,
+    application_cursor: bool,
+) -> Option<Vec<u8>> {
     let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
     let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
+    let alt = mods.contains(gdk::ModifierType::ALT_MASK);
+    let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    let cursor_key = match key {
+        gdk::Key::Up => Some('A'),
+        gdk::Key::Down => Some('B'),
+        gdk::Key::Right => Some('C'),
+        gdk::Key::Left => Some('D'),
+        gdk::Key::Home => Some('H'),
+        gdk::Key::End => Some('F'),
+        _ => None,
+    };
+    if let Some(final_byte) = cursor_key {
+        return Some(if modifier != 1 {
+            format!("\x1b[1;{modifier}{final_byte}").into_bytes()
+        } else if application_cursor {
+            format!("\x1bO{final_byte}").into_bytes()
+        } else {
+            format!("\x1b[{final_byte}").into_bytes()
+        });
+    }
+    let function_key = match key {
+        gdk::Key::F1 => Some('P'),
+        gdk::Key::F2 => Some('Q'),
+        gdk::Key::F3 => Some('R'),
+        gdk::Key::F4 => Some('S'),
+        _ => None,
+    };
+    if let Some(final_byte) = function_key {
+        return Some(
+            if modifier == 1 {
+                format!("\x1bO{final_byte}")
+            } else {
+                format!("\x1b[1;{modifier}{final_byte}")
+            }
+            .into_bytes(),
+        );
+    }
+    let tilde_key = match key {
+        gdk::Key::Insert => Some(2),
+        gdk::Key::Delete => Some(3),
+        gdk::Key::Page_Up => Some(5),
+        gdk::Key::Page_Down => Some(6),
+        gdk::Key::F5 => Some(15),
+        gdk::Key::F6 => Some(17),
+        gdk::Key::F7 => Some(18),
+        gdk::Key::F8 => Some(19),
+        gdk::Key::F9 => Some(20),
+        gdk::Key::F10 => Some(21),
+        gdk::Key::F11 => Some(23),
+        gdk::Key::F12 => Some(24),
+        _ => None,
+    };
+    if let Some(number) = tilde_key {
+        return Some(
+            if modifier == 1 {
+                format!("\x1b[{number}~")
+            } else {
+                format!("\x1b[{number};{modifier}~")
+            }
+            .into_bytes(),
+        );
+    }
+    if key == gdk::Key::ISO_Left_Tab || (key == gdk::Key::Tab && shift) {
+        return Some(b"\x1b[Z".to_vec());
+    }
 
     // Ctrl + 字母 -> C0 控制码。
-    if ctrl && !shift {
+    if ctrl {
         if let Some(ch) = key.to_unicode() {
             let lower = ch.to_ascii_lowercase();
             if lower.is_ascii_alphabetic() {
                 let ctrl_byte = (lower as u8) - b'a' + 1;
-                return Some(vec![ctrl_byte]);
+                return Some(with_alt_prefix(vec![ctrl_byte], alt));
             }
         }
         // Ctrl+\ -> FS (0x1C)，Ctrl+] -> GS (0x1D)，Ctrl+_ -> US (0x1F)。
         match key {
-            gdk::Key::backslash => return Some(vec![0x1C]),
-            gdk::Key::bracketright => return Some(vec![0x1B]),
-            gdk::Key::minus | gdk::Key::underscore => return Some(vec![0x1F]),
+            gdk::Key::space | gdk::Key::at => return Some(with_alt_prefix(vec![0], alt)),
+            gdk::Key::bracketleft => return Some(with_alt_prefix(vec![0x1B], alt)),
+            gdk::Key::backslash => return Some(with_alt_prefix(vec![0x1C], alt)),
+            gdk::Key::bracketright => return Some(with_alt_prefix(vec![0x1D], alt)),
+            gdk::Key::asciicircum => return Some(with_alt_prefix(vec![0x1E], alt)),
+            gdk::Key::minus | gdk::Key::underscore => {
+                return Some(with_alt_prefix(vec![0x1F], alt));
+            }
             _ => {}
         }
     }
@@ -2545,32 +2822,18 @@ fn key_to_bytes(key: gdk::Key, mods: gdk::ModifierType) -> Option<Vec<u8>> {
         gdk::Key::BackSpace => Some(vec![0x7F]),
         gdk::Key::Tab => Some(b"\t".to_vec()),
         gdk::Key::Escape => Some(vec![0x1B]),
-        gdk::Key::Delete => Some(b"\x1b[3~".to_vec()),
-        gdk::Key::Insert => Some(b"\x1b[2~".to_vec()),
-        gdk::Key::Home => Some(b"\x1b[H".to_vec()),
-        gdk::Key::End => Some(b"\x1b[F".to_vec()),
-        gdk::Key::Page_Up => Some(b"\x1b[5~".to_vec()),
-        gdk::Key::Page_Down => Some(b"\x1b[6~".to_vec()),
-        gdk::Key::Up => Some(b"\x1b[A".to_vec()),
-        gdk::Key::Down => Some(b"\x1b[B".to_vec()),
-        gdk::Key::Right => Some(b"\x1b[C".to_vec()),
-        gdk::Key::Left => Some(b"\x1b[D".to_vec()),
-        // 功能键 F1-F12。
-        gdk::Key::F1 => Some(b"\x1bOP".to_vec()),
-        gdk::Key::F2 => Some(b"\x1bOQ".to_vec()),
-        gdk::Key::F3 => Some(b"\x1bOR".to_vec()),
-        gdk::Key::F4 => Some(b"\x1bOS".to_vec()),
-        gdk::Key::F5 => Some(b"\x1b[15~".to_vec()),
-        gdk::Key::F6 => Some(b"\x1b[17~".to_vec()),
-        gdk::Key::F7 => Some(b"\x1b[18~".to_vec()),
-        gdk::Key::F8 => Some(b"\x1b[19~".to_vec()),
-        gdk::Key::F9 => Some(b"\x1b[20~".to_vec()),
-        gdk::Key::F10 => Some(b"\x1b[21~".to_vec()),
-        gdk::Key::F11 => Some(b"\x1b[23~".to_vec()),
-        gdk::Key::F12 => Some(b"\x1b[24~".to_vec()),
         // 普通字符（包括 Shift+字母）。
-        _ => key.to_unicode().map(|ch| ch.to_string().into_bytes()),
+        _ => key
+            .to_unicode()
+            .map(|ch| with_alt_prefix(ch.to_string().into_bytes(), alt)),
     }
+}
+
+fn with_alt_prefix(mut bytes: Vec<u8>, alt: bool) -> Vec<u8> {
+    if alt {
+        bytes.insert(0, 0x1b);
+    }
+    bytes
 }
 
 // ── Scroll ────────────────────────────────────────────────────────────────────
@@ -2582,8 +2845,11 @@ fn connect_scroll(
     font_zoom_handler: FontZoomHandler,
 ) {
     let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
-    let area_for_redraw = area.clone();
+    let area_for_redraw = area.downgrade();
     controller.connect_scroll(move |controller, _dx, dy| {
+        let Some(area_for_redraw) = area_for_redraw.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
         if controller
             .current_event_state()
             .contains(gdk::ModifierType::CONTROL_MASK)
@@ -2624,6 +2890,64 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn encodes_application_cursor_keys_and_modifiers() {
+        let none = gdk::ModifierType::empty();
+        assert_eq!(key_to_bytes(gdk::Key::Up, none, false).unwrap(), b"\x1b[A");
+        assert_eq!(key_to_bytes(gdk::Key::Up, none, true).unwrap(), b"\x1bOA");
+        assert_eq!(key_to_bytes(gdk::Key::Home, none, true).unwrap(), b"\x1bOH");
+        assert_eq!(
+            key_to_bytes(gdk::Key::Left, gdk::ModifierType::CONTROL_MASK, true).unwrap(),
+            b"\x1b[1;5D"
+        );
+        assert_eq!(
+            key_to_bytes(
+                gdk::Key::Right,
+                gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::ALT_MASK,
+                false
+            )
+            .unwrap(),
+            b"\x1b[1;4C"
+        );
+        assert_eq!(
+            key_to_bytes(gdk::Key::F5, gdk::ModifierType::SHIFT_MASK, false).unwrap(),
+            b"\x1b[15;2~"
+        );
+        assert_eq!(
+            key_to_bytes(gdk::Key::Delete, gdk::ModifierType::CONTROL_MASK, false).unwrap(),
+            b"\x1b[3;5~"
+        );
+    }
+
+    #[test]
+    fn encodes_control_punctuation_alt_text_and_backtab() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        assert_eq!(
+            key_to_bytes(gdk::Key::bracketright, ctrl, false).unwrap(),
+            [0x1d]
+        );
+        assert_eq!(key_to_bytes(gdk::Key::space, ctrl, false).unwrap(), [0]);
+        assert_eq!(
+            key_to_bytes(gdk::Key::b, gdk::ModifierType::ALT_MASK, false).unwrap(),
+            b"\x1bb"
+        );
+        assert_eq!(
+            key_to_bytes(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK, false).unwrap(),
+            b"\x1b[Z"
+        );
+    }
+
+    #[test]
+    fn historical_view_remains_anchored_as_output_scrolls() {
+        assert_eq!(scroll_offset_after_output(4, 10, 12, 20, false), 6);
+        assert_eq!(scroll_offset_after_output(4, 100, 102, 10, false), 6);
+        assert_eq!(scroll_offset_after_output(9, 100, 105, 10, false), 10);
+        assert_eq!(scroll_offset_after_output(0, 100, 105, 10, false), 0);
+        assert_eq!(scroll_offset_after_output(4, 100, 0, 0, false), 0);
+        assert_eq!(scroll_offset_after_output(4, 100, 100, 0, false), 0);
+        assert_eq!(scroll_offset_after_output(4, 100, 100, 10, true), 0);
+    }
+
     fn cells_from_text(text: &str) -> Vec<Cell> {
         text.chars()
             .map(|ch| Cell {
@@ -2645,8 +2969,9 @@ mod tests {
         expected: SemanticHighlight,
     ) {
         let start = text.find(needle).expect("test substring should exist");
-        for col in start..start + needle.len() {
-            assert_eq!(highlights[col], Some(expected), "column {col} in {needle}");
+        for (offset, highlight) in highlights[start..start + needle.len()].iter().enumerate() {
+            let col = start + offset;
+            assert_eq!(*highlight, Some(expected), "column {col} in {needle}");
         }
     }
 
