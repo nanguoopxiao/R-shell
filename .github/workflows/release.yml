@@ -80,6 +80,15 @@ jobs:
           "$($hash.Hash)  $archive" | Set-Content -Encoding ascii "$archive.sha256"
           "archive=$archive" >> $env:GITHUB_ENV
 
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.archive }}
+          path: |
+            ${{ env.archive }}
+            ${{ env.archive }}.sha256
+          if-no-files-found: error
+
       - name: Generate release notes
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
@@ -104,7 +113,7 @@ jobs:
             ""
           )
           if ($previousTag) {
-            $notes += "Commit summary from $previousTag to $version:"
+            $notes += "Commit summary from $previousTag to ${version}:"
           } else {
             $notes += "No previous tag was found. Showing the latest 20 commits:"
           }
@@ -145,15 +154,6 @@ jobs:
           foreach ($asset in $release.assets) {
             Invoke-RestMethod -Headers $headers -Method Delete -Uri $asset.url
           }
-
-      - name: Upload workflow artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.archive }}
-          path: |
-            ${{ env.archive }}
-            ${{ env.archive }}.sha256
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
