@@ -43,7 +43,7 @@ The title bar and session tabs share one row. Search saved sessions by name, hos
 Download the Windows GTK package from GitHub Releases:
 
 ```text
-R-shell-windows-gtk-v0.1.0.zip
+R-shell-windows-gtk-slim-v0.1.1.zip
 ```
 
 Extract it and run the executable at the package root:
@@ -149,7 +149,7 @@ dist\windows-gtk\R-shell.exe
 Create a release archive manually:
 
 ```powershell
-$Version = "v0.1.0"
+$Version = "v0.1.1"
 $Archive = "R-shell-windows-gtk-$Version.zip"
 Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -CompressionLevel Optimal -Force
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
@@ -161,8 +161,9 @@ Recommended release flow:
 
 ```powershell
 git status --short
-git tag v0.1.1
-git push origin main --tags
+git tag -a v0.1.1 -m "R-shell v0.1.1"
+git push origin main
+git push origin refs/tags/v0.1.1
 ```
 
 For a more polished product-style announcement, edit the generated GitHub Release body afterward and group the notes into sections such as Added, Fixed, and Known Issues.

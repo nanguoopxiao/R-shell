@@ -43,7 +43,7 @@ R-shell 是一个使用 Rust 和 GTK4 构建的跨平台终端客户端。它的
 在 GitHub Releases 中下载 Windows GTK 包：
 
 ```text
-R-shell-windows-gtk-v0.1.0.zip
+R-shell-windows-gtk-slim-v0.1.1.zip
 ```
 
 解压后直接运行根目录中的：
@@ -149,7 +149,7 @@ dist\windows-gtk\R-shell.exe
 手动压缩发布包：
 
 ```powershell
-$Version = "v0.1.0"
+$Version = "v0.1.1"
 $Archive = "R-shell-windows-gtk-$Version.zip"
 Compress-Archive -Path "dist\windows-gtk\*" -DestinationPath $Archive -CompressionLevel Optimal -Force
 Get-FileHash -Algorithm SHA256 $Archive | Format-List
@@ -161,8 +161,9 @@ Get-FileHash -Algorithm SHA256 $Archive | Format-List
 
 ```powershell
 git status --short
-git tag v0.1.1
-git push origin main --tags
+git tag -a v0.1.1 -m "R-shell v0.1.1"
+git push origin main
+git push origin refs/tags/v0.1.1
 ```
 
 如果需要更像正式产品公告，可以在 Release 创建后到 GitHub 页面手动编辑正文，把自动生成的提交摘要整理成「新增」「修复」「已知问题」等段落。

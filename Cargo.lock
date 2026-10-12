@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "shell-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs-next",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "shell-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "shell-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "portable-pty",
  "shell-core",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "shell-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "shell-renderer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
  "pangocairo",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "shell-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "dirs-next",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "shell-terminal"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "shell-core",
